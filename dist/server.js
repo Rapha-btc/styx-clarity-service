@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { getProofData, getProofGenerationData, extractProofInfo } from 'clarity-bitcoin-client';
+import fetch from 'node-fetch';
 // Load environment variables
 dotenv.config();
 const app = express();
@@ -10,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 function getRpcParams() {
     return {
-        rpcHost: process.env.RPC_HOST || 'localhost',
+        rpcHost: `http://${process.env.RPC_HOST || 'localhost'}`, // Add http:// prefix
         rpcPort: parseInt(process.env.RPC_PORT || '8332'),
         rpcUser: process.env.RPC_USER || '',
         rpcPass: process.env.RPC_PASS || ''
@@ -24,12 +25,59 @@ app.get('/health', (req, res) => {
 app.get('/api/proof/:txid', async (req, res) => {
     try {
         const { txid } = req.params;
-        const blockHash = req.query.blockHash || null;
+        let blockHash = req.query.blockHash || '';
         console.log(`Processing request for txid: ${txid}`);
-        // Get proof data - using getProofData instead of fetchApiData based on the library code
-        const data = await getProofData(txid, blockHash || '', getRpcParams());
+        // If no blockHash provided, try to get it from the transaction
+        if (!blockHash) {
+            try {
+                console.log("No blockhash provided, attempting to retrieve transaction info...");
+                const rpcParams = getRpcParams();
+                console.log("RPC Params:", JSON.stringify(rpcParams));
+                // Make RPC call to get transaction info
+                const requestBody = JSON.stringify({
+                    jsonrpc: '1.0',
+                    id: 'bitcoin-rpc',
+                    method: 'getrawtransaction',
+                    params: [txid, true]
+                });
+                console.log("RPC Request:", requestBody);
+                const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+                    },
+                    body: requestBody
+                });
+                // Log the raw response
+                const rawResponse = await response.text();
+                console.log("Raw RPC Response:", rawResponse);
+                // Parse the response
+                const txInfo = JSON.parse(rawResponse);
+                console.log("Parsed txInfo:", JSON.stringify(txInfo));
+                if (txInfo.result && txInfo.result.blockhash) {
+                    blockHash = txInfo.result.blockhash;
+                    console.log(`Found blockhash: ${blockHash} for txid: ${txid}`);
+                }
+                else if (txInfo.error) {
+                    console.error("RPC Error:", JSON.stringify(txInfo.error));
+                }
+                else {
+                    console.error("No blockhash found in transaction info");
+                }
+            }
+            catch (error) {
+                console.error('Error getting transaction info:', error);
+            }
+        }
+        console.log(`Using blockhash: "${blockHash}" for getProofData call`);
+        // Get proof data
+        const data = await getProofData(txid, blockHash, getRpcParams());
+        console.log("Proof data retrieved successfully");
         const pgd = getProofGenerationData(data);
+        console.log("Proof generation data created");
         const proof = extractProofInfo(pgd, data);
+        console.log("Proof extracted successfully");
         res.json(proof);
     }
     catch (error) {
