@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { getProofData, getProofGenerationData, extractProofInfo } from 'clarity-bitcoin-client';
+import bitcoin from 'clarity-bitcoin-client/dist/bitcoin';
 
 // Load environment variables
 dotenv.config();
