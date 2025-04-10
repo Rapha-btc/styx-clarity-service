@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "axios": "^1.5.0",
-    "clarity-bitcoin-client": "file:./clarity-bitcoin-client",
+    "clarity-bitcoin-client": "git@github.com:BigMarketDao/clarity-bitcoin-client#52f57cf58a009133d541252d2d95a100d8c7e8b4",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2"
