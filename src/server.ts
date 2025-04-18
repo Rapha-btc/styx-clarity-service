@@ -130,6 +130,100 @@ app.get('/api/proof/:txid', async (req, res) => {
   }
 });
 
+// Transaction status endpoint
+app.get('/api/tx/:txid/status', async (req, res) => {
+  try {
+    const { txid } = req.params;
+    console.log(`Processing transaction status request for txid: ${txid}`);
+    
+    // Make RPC call to get transaction info from Bitcoin node
+    const requestBody = JSON.stringify({
+      jsonrpc: '1.0',
+      id: 'bitcoin-rpc',
+      method: 'getrawtransaction',
+      params: [txid, true]
+    });
+    
+    console.log("RPC Request for transaction:", requestBody);
+    
+    const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+      },
+      body: requestBody
+    });
+    
+    // Parse the response
+    const rawResponse = await response.text();
+    const txInfo = JSON.parse(rawResponse);
+    
+    if (txInfo.error) {
+      console.error("RPC Error:", JSON.stringify(txInfo.error));
+      return res.status(500).json({ 
+        error: txInfo.error.message || 'Error retrieving transaction',
+        txid: txid 
+      });
+    }
+    
+    if (!txInfo.result) {
+      return res.status(404).json({ 
+        error: 'Transaction not found',
+        txid: txid 
+      });
+    }
+    
+    // Check if transaction is confirmed (has a blockhash)
+    const confirmed = !!txInfo.result.blockhash;
+    
+    // If confirmed, get additional block info
+    let blockHeight, blockTime;
+    
+    if (confirmed) {
+      // Get block info
+      const blockRequestBody = JSON.stringify({
+        jsonrpc: '1.0',
+        id: 'bitcoin-rpc',
+        method: 'getblock',
+        params: [txInfo.result.blockhash]
+      });
+      
+      const blockResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+        },
+        body: blockRequestBody
+      });
+      
+      const blockRawResponse = await blockResponse.text();
+      const blockInfo = JSON.parse(blockRawResponse);
+      
+      if (blockInfo.result) {
+        blockHeight = blockInfo.result.height;
+        blockTime = blockInfo.result.time;
+      }
+    }
+    
+    // Return the transaction status in the same format as mempool.space API
+    res.json({
+      confirmed: confirmed,
+      block_height: blockHeight,
+      block_hash: txInfo.result.blockhash,
+      block_time: blockTime
+    });
+    
+  } catch (error) {
+    console.error('Error processing transaction status request:', error);
+    res.status(500).json({ 
+      error: error instanceof Error ? error.message : 'Unknown error',
+      txid: req.params.txid 
+    });
+  }
+});
+
 // Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
