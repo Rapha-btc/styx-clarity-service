@@ -313,7 +313,7 @@ app.get('/api/tx/:txid/hex', async (req, res) => {
         });
     }
 });
-// Endpoint for getting full transaction data
+// Endpoint for getting full transaction data - fix the format
 app.get('/api/tx/:txid', async (req, res) => {
     try {
         const { txid } = req.params;
@@ -352,30 +352,33 @@ app.get('/api/tx/:txid', async (req, res) => {
                 txid: txid
             });
         }
-        // Convert to mempool.space API format
+        // Convert to mempool.space API format (IMPORTANT: Include scriptpubkey)
         const mempoolFormatTx = {
             txid: txData.result.txid,
             version: txData.result.version,
             locktime: txData.result.locktime,
-            vin: txData.result.vin.map(input => ({
+            vin: txData.result.vin.map((input) => ({
                 txid: input.txid,
                 vout: input.vout,
-                scriptsig: input.scriptsig,
+                scriptsig: input.scriptsig || "",
                 sequence: input.sequence,
                 witness: input.witness || []
             })),
-            vout: txData.result.vout.map(output => ({
-                scriptpubkey: output.scriptpubkey,
+            vout: txData.result.vout.map((output, index) => ({
+                scriptpubkey: output.scriptPubKey.hex, 
+                scriptpubkey_asm: output.scriptPubKey.asm,
+                scriptpubkey_type: output.scriptPubKey.type,
                 value: output.value,
-                n: 0 // Add if needed for compatibility
+                n: index
             })),
             status: {
                 confirmed: !!txData.result.blockhash,
-                block_height: txData.result.confirmations ? undefined : undefined,
+                block_height: txData.result.height,
                 block_hash: txData.result.blockhash,
                 block_time: txData.result.blocktime
             }
         };
+        console.log(`Response format for output 0:`, JSON.stringify(mempoolFormatTx.vout[0]));
         res.json(mempoolFormatTx);
     }
     catch (error) {
