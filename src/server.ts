@@ -44,6 +44,69 @@ function getRpcParams(): RpcParams {
   };
 }
 
+// Add these type definitions at the top of your server.ts file
+
+// Type definitions for Bitcoin RPC responses
+interface RpcResponse<T> {
+  result?: T;
+  error?: {
+    code: number;
+    message: string;
+  };
+  id: string;
+}
+
+// Fee estimation response types
+interface FeeEstimateResult {
+  feerate: number;
+  blocks: number;
+}
+
+// Transaction response types
+interface TransactionInput {
+  txid: string;
+  vout: number;
+  scriptsig: string;
+  scriptsig_asm: string;
+  sequence: number;
+  witness?: string[];
+}
+
+interface TransactionOutput {
+  scriptpubkey: string;
+  scriptpubkey_asm: string;
+  scriptpubkey_type: string;
+  scriptpubkey_address?: string;
+  value: number;
+}
+
+interface TransactionResult {
+  txid: string;
+  version: number;
+  locktime: number;
+  vin: TransactionInput[];
+  vout: TransactionOutput[];
+  blockhash?: string;
+  confirmations?: number;
+  time?: number;
+  blocktime?: number;
+}
+
+// UTXO scan result types
+interface Unspent {
+  txid: string;
+  vout: number;
+  scriptPubKey: string;
+  amount: number;
+  height: number;
+}
+
+interface UtxoScanResult {
+  success: boolean;
+  unspents: Unspent[];
+  total_amount: number;
+}
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -220,6 +283,313 @@ app.get('/api/tx/:txid/status', async (req, res) => {
     res.status(500).json({ 
       error: error instanceof Error ? error.message : 'Unknown error',
       txid: req.params.txid 
+    });
+  }
+});
+
+// Bitcoin fee endpoint
+app.get('/api/bitcoin/fees', async (req, res) => {
+  try {
+    const providedKey = req.headers['x-api-key'];
+    
+    if (!providedKey || providedKey !== process.env.API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid API key' });
+    }
+    
+    console.log("Processing Bitcoin fee estimation request");
+    
+    // Make RPC call to get fee estimation from Bitcoin node
+    const requestBody = JSON.stringify({
+      jsonrpc: '1.0',
+      id: 'bitcoin-rpc',
+      method: 'estimatesmartfee',
+      params: [2]  // Target 2 blocks for medium fee
+    });
+    
+    const mediumFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+      },
+      body: requestBody
+    });
+    
+    const mediumFeeText = await mediumFeeResponse.text();
+    const mediumFeeData = JSON.parse(mediumFeeText) as RpcResponse<FeeEstimateResult>;
+    
+    // Get low fee (6 blocks)
+    const lowFeeRequest = JSON.stringify({
+      jsonrpc: '1.0',
+      id: 'bitcoin-rpc',
+      method: 'estimatesmartfee',
+      params: [6]  // Target 6 blocks for low fee
+    });
+    
+    const lowFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+      },
+      body: lowFeeRequest
+    });
+    
+    const lowFeeText = await lowFeeResponse.text();
+    const lowFeeData = JSON.parse(lowFeeText) as RpcResponse<FeeEstimateResult>;
+    
+    // Get high fee (1 block)
+    const highFeeRequest = JSON.stringify({
+      jsonrpc: '1.0',
+      id: 'bitcoin-rpc',
+      method: 'estimatesmartfee',
+      params: [1]  // Target 1 block for high fee
+    });
+    
+    const highFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+      },
+      body: highFeeRequest
+    });
+    
+    const highFeeText = await highFeeResponse.text();
+    const highFeeData = JSON.parse(highFeeText) as RpcResponse<FeeEstimateResult>;
+    
+    // Calculate fee rates
+    // Bitcoin RPC returns BTC/kB, we need sat/vB
+    // 100000000 sats per BTC / 1000 vBytes per kB = 100000 conversion factor
+    const CONVERSION_FACTOR = 100000;
+    
+    let medium = Math.round((mediumFeeData.result?.feerate || 0.0001) * CONVERSION_FACTOR);
+    let low = Math.round((lowFeeData.result?.feerate || 0.00005) * CONVERSION_FACTOR);
+    let high = Math.round((highFeeData.result?.feerate || 0.0002) * CONVERSION_FACTOR);
+    
+    // Ensure minimum values and proper ordering
+    low = Math.max(1, low);
+    medium = Math.max(low + 1, medium);
+    high = Math.max(medium + 1, high);
+    
+    res.json({
+      low,
+      medium,
+      high
+    });
+  } catch (error) {
+    console.error('Error processing fee estimation request:', error);
+    res.status(500).json({ 
+      error: error instanceof Error ? error.message : 'Unknown error',
+      fallback: { low: 1, medium: 2, high: 5 }
+    });
+  }
+});
+
+// Add a new endpoint for fetching transaction hex
+app.get('/api/tx/:txid/hex', async (req, res) => {
+  try {
+    const { txid } = req.params;
+    const providedKey = req.headers['x-api-key'];
+    
+    if (!providedKey || providedKey !== process.env.API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid API key' });
+    }
+    
+    console.log(`Processing transaction hex request for txid: ${txid}`);
+    
+    // Make RPC call to get raw transaction
+    const requestBody = JSON.stringify({
+      jsonrpc: '1.0',
+      id: 'bitcoin-rpc',
+      method: 'getrawtransaction',
+      params: [txid]
+    });
+    
+    const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+      },
+      body: requestBody
+    });
+    
+    const text = await response.text();
+    const txData = JSON.parse(text) as RpcResponse<string>;
+    
+    if (txData.error) {
+      console.error("RPC Error:", JSON.stringify(txData.error));
+      return res.status(500).json({ 
+        error: txData.error.message || 'Error retrieving transaction',
+        txid: txid 
+      });
+    }
+    
+    if (!txData.result) {
+      return res.status(404).json({ 
+        error: 'Transaction not found',
+        txid: txid 
+      });
+    }
+    
+    // Return the raw transaction hex
+    res.set('Content-Type', 'text/plain');
+    res.send(txData.result);
+  } catch (error) {
+    console.error('Error processing transaction hex request:', error);
+    res.status(500).json({ 
+      error: error instanceof Error ? error.message : 'Unknown error',
+      txid: req.params.txid 
+    });
+  }
+});
+
+// Endpoint for getting full transaction data
+app.get('/api/tx/:txid', async (req, res) => {
+  try {
+    const { txid } = req.params;
+    const providedKey = req.headers['x-api-key'];
+    
+    if (!providedKey || providedKey !== process.env.API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid API key' });
+    }
+    
+    console.log(`Processing transaction data request for txid: ${txid}`);
+    
+    // Make RPC call to get raw transaction
+    const requestBody = JSON.stringify({
+      jsonrpc: '1.0',
+      id: 'bitcoin-rpc',
+      method: 'getrawtransaction',
+      params: [txid, true]  // true for verbose output
+    });
+    
+    const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+      },
+      body: requestBody
+    });
+    
+    const text = await response.text();
+    const txData = JSON.parse(text) as RpcResponse<TransactionResult>;
+    
+    if (txData.error) {
+      console.error("RPC Error:", JSON.stringify(txData.error));
+      return res.status(500).json({ 
+        error: txData.error.message || 'Error retrieving transaction',
+        txid: txid 
+      });
+    }
+    
+    if (!txData.result) {
+      return res.status(404).json({ 
+        error: 'Transaction not found',
+        txid: txid 
+      });
+    }
+    
+    // Convert to mempool.space API format
+    const mempoolFormatTx = {
+      txid: txData.result.txid,
+      version: txData.result.version,
+      locktime: txData.result.locktime,
+      vin: txData.result.vin.map(input => ({
+        txid: input.txid,
+        vout: input.vout,
+        scriptsig: input.scriptsig,
+        sequence: input.sequence,
+        witness: input.witness || []
+      })),
+      vout: txData.result.vout.map(output => ({
+        scriptpubkey: output.scriptpubkey,
+        value: output.value,
+        n: 0  // Add if needed for compatibility
+      })),
+      status: {
+        confirmed: !!txData.result.blockhash,
+        block_height: txData.result.confirmations ? undefined : undefined,
+        block_hash: txData.result.blockhash,
+        block_time: txData.result.blocktime
+      }
+    };
+    
+    res.json(mempoolFormatTx);
+  } catch (error) {
+    console.error('Error processing transaction data request:', error);
+    res.status(500).json({ 
+      error: error instanceof Error ? error.message : 'Unknown error',
+      txid: req.params.txid 
+    });
+  }
+});
+
+// Add a UTXO fetching endpoint
+app.get('/api/address/:address/utxo', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const providedKey = req.headers['x-api-key'];
+    
+    if (!providedKey || providedKey !== process.env.API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid API key' });
+    }
+    
+    console.log(`Processing UTXO request for address: ${address}`);
+    
+    // Make RPC call to get UTXOs
+    const requestBody = JSON.stringify({
+      jsonrpc: '1.0',
+      id: 'bitcoin-rpc',
+      method: 'scantxoutset',
+      params: ['start', [`addr(${address})`]]
+    });
+    
+    const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+      },
+      body: requestBody
+    });
+    
+    const text = await response.text();
+    const utxoData = JSON.parse(text) as RpcResponse<UtxoScanResult>;
+    
+    if (utxoData.error) {
+      console.error("RPC Error:", JSON.stringify(utxoData.error));
+      return res.status(500).json({ 
+        error: utxoData.error.message || 'Error retrieving UTXOs',
+        address: address 
+      });
+    }
+    
+    if (!utxoData.result || !utxoData.result.unspents) {
+      return res.json([]);
+    }
+    
+    // Convert to mempool.space API format
+    const formattedUtxos = utxoData.result.unspents.map(utxo => {
+      const [txid, vout] = utxo.txid.split(':');
+      return {
+        txid,
+        vout: parseInt(vout),
+        value: Math.round(utxo.amount * 100000000), // Convert BTC to satoshis
+        status: {
+          confirmed: true
+        }
+      };
+    });
+    
+    res.json(formattedUtxos);
+  } catch (error) {
+    console.error('Error processing UTXO request:', error);
+    res.status(500).json({ 
+      error: error instanceof Error ? error.message : 'Unknown error',
+      address: req.params.address 
     });
   }
 });
