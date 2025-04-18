@@ -107,6 +107,43 @@ interface UtxoScanResult {
   total_amount: number;
 }
 
+// Define interfaces for Bitcoin RPC responses
+interface BitcoinInput {
+  txid: string;
+  vout: number;
+  scriptsig?: string;
+  scriptsig_asm?: string;
+  sequence: number;
+  witness?: string[];
+}
+
+interface BitcoinScriptPubKey {
+  hex: string;
+  asm: string;
+  type: string;
+  addresses?: string[];
+  address?: string;
+}
+
+interface BitcoinOutput {
+  value: number;
+  n: number;
+  scriptPubKey: BitcoinScriptPubKey;
+}
+
+interface BitcoinTransaction {
+  txid: string;
+  version: number;
+  locktime: number;
+  vin: BitcoinInput[];
+  vout: BitcoinOutput[];
+  blockhash?: string;
+  confirmations?: number;
+  time?: number;
+  blocktime?: number;
+  height?: number;
+}
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -445,7 +482,7 @@ app.get('/api/tx/:txid/hex', async (req, res) => {
   }
 });
 
-// Endpoint for getting full transaction data
+// Endpoint for getting full transaction data - fix the format
 app.get('/api/tx/:txid', async (req, res) => {
   try {
     const { txid } = req.params;
@@ -475,7 +512,7 @@ app.get('/api/tx/:txid', async (req, res) => {
     });
     
     const text = await response.text();
-    const txData = JSON.parse(text) as RpcResponse<TransactionResult>;
+    const txData = JSON.parse(text);
     
     if (txData.error) {
       console.error("RPC Error:", JSON.stringify(txData.error));
@@ -492,30 +529,34 @@ app.get('/api/tx/:txid', async (req, res) => {
       });
     }
     
-    // Convert to mempool.space API format
+    // Convert to mempool.space API format (IMPORTANT: Include scriptpubkey)
     const mempoolFormatTx = {
       txid: txData.result.txid,
       version: txData.result.version,
       locktime: txData.result.locktime,
-      vin: txData.result.vin.map(input => ({
+      vin: txData.result.vin.map((input: BitcoinInput) => ({
         txid: input.txid,
         vout: input.vout,
-        scriptsig: input.scriptsig,
+        scriptsig: input.scriptsig || "",
         sequence: input.sequence,
         witness: input.witness || []
       })),
-      vout: txData.result.vout.map(output => ({
-        scriptpubkey: output.scriptpubkey,
+      vout: txData.result.vout.map((output: BitcoinOutput, index: number) => ({
+        scriptpubkey: output.scriptPubKey.hex, // IMPORTANT: Include this property
+        scriptpubkey_asm: output.scriptPubKey.asm,
+        scriptpubkey_type: output.scriptPubKey.type,
         value: output.value,
-        n: 0  // Add if needed for compatibility
+        n: index
       })),
       status: {
         confirmed: !!txData.result.blockhash,
-        block_height: txData.result.confirmations ? undefined : undefined,
+        block_height: txData.result.height,
         block_hash: txData.result.blockhash,
         block_time: txData.result.blocktime
       }
     };
+    
+    console.log(`Response format for output 0:`, JSON.stringify(mempoolFormatTx.vout[0]));
     
     res.json(mempoolFormatTx);
   } catch (error) {
