@@ -569,16 +569,24 @@ app.get('/api/tx/:txid', async (req, res) => {
 });
 
 // Add a UTXO fetching endpoint
+// Enhanced UTXO fetching endpoint with better logging
 app.get('/api/address/:address/utxo', async (req, res) => {
   try {
     const { address } = req.params;
     const providedKey = req.headers['x-api-key'];
     
+    console.log(`[UTXO] Processing UTXO request for address: ${address}`);
+    console.log(`[UTXO] API Key provided: ${providedKey ? 'Yes' : 'No'}`);
+    
     if (!providedKey || providedKey !== process.env.API_KEY) {
+      console.log(`[UTXO] Authentication failed. Expected: ${process.env.API_KEY}, Got: ${providedKey}`);
       return res.status(401).json({ error: 'Unauthorized: Invalid API key' });
     }
     
-    console.log(`Processing UTXO request for address: ${address}`);
+    console.log(`[UTXO] Authentication successful, proceeding with RPC call`);
+    console.log(`[UTXO] RPC Host: ${process.env.RPC_HOST || 'localhost'}`);
+    console.log(`[UTXO] RPC Port: ${process.env.RPC_PORT || '8332'}`);
+    console.log(`[UTXO] RPC User set: ${process.env.RPC_USER ? 'Yes' : 'No'}`);
     
     // Make RPC call to get UTXOs
     const requestBody = JSON.stringify({
@@ -588,46 +596,93 @@ app.get('/api/address/:address/utxo', async (req, res) => {
       params: ['start', [`addr(${address})`]]
     });
     
-    const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-      },
-      body: requestBody
-    });
+    console.log(`[UTXO] RPC Request: ${requestBody}`);
     
-    const text = await response.text();
-    const utxoData = JSON.parse(text) as RpcResponse<UtxoScanResult>;
+    // Start timing the request
+    const startTime = Date.now();
     
-    if (utxoData.error) {
-      console.error("RPC Error:", JSON.stringify(utxoData.error));
-      return res.status(500).json({ 
-        error: utxoData.error.message || 'Error retrieving UTXOs',
-        address: address 
+    try {
+      const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+        },
+        body: requestBody
       });
-    }
-    
-    if (!utxoData.result || !utxoData.result.unspents) {
-      return res.json([]);
-    }
-    
-    // Convert to mempool.space API format
-    const formattedUtxos = utxoData.result.unspents.map(utxo => {
-      const [txid, vout] = utxo.txid.split(':');
-      return {
-        txid,
-        vout: parseInt(vout),
-        value: Math.round(utxo.amount * 100000000), // Convert BTC to satoshis
-        status: {
-          confirmed: true
+      
+      const endTime = Date.now();
+      console.log(`[UTXO] RPC call took ${endTime - startTime}ms`);
+      
+      if (!response.ok) {
+        console.log(`[UTXO] RPC HTTP error: ${response.status} ${response.statusText}`);
+      }
+      
+      const text = await response.text();
+      console.log(`[UTXO] RPC Response length: ${text.length} bytes`);
+      
+      // Log a preview of the response (first 200 characters)
+      console.log(`[UTXO] RPC Response preview: ${text.substring(0, 200)}...`);
+      
+      const utxoData = JSON.parse(text) as RpcResponse<UtxoScanResult>;
+      
+      if (utxoData.error) {
+        console.error(`[UTXO] RPC Error:`, JSON.stringify(utxoData.error));
+        return res.status(500).json({ 
+          error: utxoData.error.message || 'Error retrieving UTXOs',
+          address: address 
+        });
+      }
+      
+      console.log(`[UTXO] Processing RPC result`);
+      if (!utxoData.result || !utxoData.result.unspents) {
+        console.log(`[UTXO] No UTXOs found for address ${address}`);
+        return res.json([]);
+      }
+      
+      console.log(`[UTXO] Found ${utxoData.result.unspents.length} UTXOs for address ${address}`);
+      
+      // Convert to mempool.space API format
+      const formattedUtxos = utxoData.result.unspents.map(utxo => {
+        // Log the UTXO format from Bitcoin Core
+        console.log(`[UTXO] Processing UTXO: ${JSON.stringify(utxo)}`);
+        
+        // scantxoutset returns txid:vout format, need to split it
+        let txid, vout;
+        if (utxo.txid && utxo.txid.includes(':')) {
+          [txid, vout] = utxo.txid.split(':');
+        } else {
+          // Handle possible different format
+          console.log(`[UTXO] Unexpected UTXO format: ${JSON.stringify(utxo)}`);
+          txid = utxo.txid || '';
+          vout = utxo.vout || 0;
         }
-      };
-    });
-    
-    res.json(formattedUtxos);
+        
+        return {
+          txid,
+          vout: typeof vout === 'string' ? parseInt(vout) : vout,
+          value: Math.round((utxo.amount || 0) * 100000000), // Convert BTC to satoshis
+          status: {
+            confirmed: true
+          }
+        };
+      });
+      
+      console.log(`[UTXO] Returning ${formattedUtxos.length} formatted UTXOs`);
+      res.json(formattedUtxos);
+    } catch (rpcError) {
+      console.error(`[UTXO] Error during RPC call: ${rpcError instanceof Error ? rpcError.message : 'Unknown error'}`);
+      console.error(`[UTXO] RPC call duration before error: ${Date.now() - startTime}ms`);
+      if (rpcError instanceof Error && rpcError.stack) {
+        console.error(`[UTXO] Error stack: ${rpcError.stack}`);
+      }
+      throw rpcError;
+    }
   } catch (error) {
-    console.error('Error processing UTXO request:', error);
+    console.error(`[UTXO] Error processing UTXO request: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    if (error instanceof Error && error.stack) {
+      console.error(`[UTXO] Error stack: ${error.stack}`);
+    }
     res.status(500).json({ 
       error: error instanceof Error ? error.message : 'Unknown error',
       address: req.params.address 
