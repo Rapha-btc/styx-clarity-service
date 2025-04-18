@@ -5,10 +5,20 @@ import { getProofData, getProofGenerationData, extractProofInfo } from 'clarity-
 import fetch from 'node-fetch';
 // Load environment variables
 dotenv.config();
+// Add API key authentication
+const API_KEY = process.env.API_KEY || 'your-secure-api-key-here';
 const app = express();
 // Enable CORS and JSON parsing
 app.use(cors());
 app.use(express.json());
+// API key authentication middleware
+app.use((req, res, next) => {
+    const providedKey = req.headers['x-api-key'];
+    if (!providedKey || providedKey !== API_KEY) {
+        return res.status(401).json({ error: 'Unauthorized: Invalid API key' });
+    }
+    next();
+});
 function getRpcParams() {
     return {
         rpcHost: `http://${process.env.RPC_HOST || 'localhost'}`, // Add http:// prefix
