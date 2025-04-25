@@ -343,6 +343,7 @@ app.get('/api/bitcoin/fees', async (req, res) => {
       params: [2]  // Target 2 blocks for medium fee
     });
     
+    console.log("Requesting medium fee estimate for 2 blocks");
     const mediumFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
       method: 'POST',
       headers: {
@@ -353,6 +354,7 @@ app.get('/api/bitcoin/fees', async (req, res) => {
     });
     
     const mediumFeeText = await mediumFeeResponse.text();
+    console.log("Medium fee response:", mediumFeeText);
     const mediumFeeData = JSON.parse(mediumFeeText) as RpcResponse<FeeEstimateResult>;
     
     // Get low fee (6 blocks)
@@ -363,6 +365,7 @@ app.get('/api/bitcoin/fees', async (req, res) => {
       params: [6]  // Target 6 blocks for low fee
     });
     
+    console.log("Requesting low fee estimate for 6 blocks");
     const lowFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
       method: 'POST',
       headers: {
@@ -373,6 +376,7 @@ app.get('/api/bitcoin/fees', async (req, res) => {
     });
     
     const lowFeeText = await lowFeeResponse.text();
+    console.log("Low fee response:", lowFeeText);
     const lowFeeData = JSON.parse(lowFeeText) as RpcResponse<FeeEstimateResult>;
     
     // Get high fee (1 block)
@@ -383,6 +387,7 @@ app.get('/api/bitcoin/fees', async (req, res) => {
       params: [1]  // Target 1 block for high fee
     });
     
+    console.log("Requesting high fee estimate for 1 block");
     const highFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
       method: 'POST',
       headers: {
@@ -393,6 +398,7 @@ app.get('/api/bitcoin/fees', async (req, res) => {
     });
     
     const highFeeText = await highFeeResponse.text();
+    console.log("High fee response:", highFeeText);
     const highFeeData = JSON.parse(highFeeText) as RpcResponse<FeeEstimateResult>;
     
     // Calculate fee rates
@@ -400,14 +406,30 @@ app.get('/api/bitcoin/fees', async (req, res) => {
     // 100000000 sats per BTC / 1000 vBytes per kB = 100000 conversion factor
     const CONVERSION_FACTOR = 100000;
     
-    let medium = Math.round((mediumFeeData.result?.feerate || 0.0001) * CONVERSION_FACTOR);
-    let low = Math.round((lowFeeData.result?.feerate || 0.00005) * CONVERSION_FACTOR);
-    let high = Math.round((highFeeData.result?.feerate || 0.0002) * CONVERSION_FACTOR);
+    console.log("Raw fee values:");
+    console.log("- Low:", lowFeeData.result?.feerate);
+    console.log("- Medium:", mediumFeeData.result?.feerate);
+    console.log("- High:", highFeeData.result?.feerate);
+    
+    // Use lower fallback values that better match current network conditions
+    let medium = Math.round((mediumFeeData.result?.feerate || 0.000003) * CONVERSION_FACTOR);
+    let low = Math.round((lowFeeData.result?.feerate || 0.000002) * CONVERSION_FACTOR);
+    let high = Math.round((highFeeData.result?.feerate || 0.000004) * CONVERSION_FACTOR);
+    
+    console.log("Calculated fee rates before adjustments:");
+    console.log("- Low:", low, "sat/vB");
+    console.log("- Medium:", medium, "sat/vB");
+    console.log("- High:", high, "sat/vB");
     
     // Ensure minimum values and proper ordering
     low = Math.max(1, low);
     medium = Math.max(low + 1, medium);
     high = Math.max(medium + 1, high);
+    
+    console.log("Final fee rates after adjustments:");
+    console.log("- Low:", low, "sat/vB");
+    console.log("- Medium:", medium, "sat/vB");
+    console.log("- High:", high, "sat/vB");
     
     res.json({
       low,
@@ -416,9 +438,14 @@ app.get('/api/bitcoin/fees', async (req, res) => {
     });
   } catch (error) {
     console.error('Error processing fee estimation request:', error);
+    
+    // Use more reasonable fallback values that match current network conditions
+    const fallbackResponse = { low: 1, medium: 2, high: 3 };
+    console.log("Using fallback fee rates due to error:", fallbackResponse);
+    
     res.status(500).json({ 
       error: error instanceof Error ? error.message : 'Unknown error',
-      fallback: { low: 1, medium: 2, high: 5 }
+      fallback: fallbackResponse
     });
   }
 });
