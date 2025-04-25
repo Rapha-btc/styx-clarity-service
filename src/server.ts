@@ -335,37 +335,15 @@ app.get('/api/bitcoin/fees', async (req, res) => {
     
     console.log("Processing Bitcoin fee estimation request");
     
-    // Make RPC call to get fee estimation from Bitcoin node
-    const requestBody = JSON.stringify({
-      jsonrpc: '1.0',
-      id: 'bitcoin-rpc',
-      method: 'estimatesmartfee',
-      params: [2]  // Target 2 blocks for medium fee
-    });
-    
-    console.log("Requesting medium fee estimate for 2 blocks");
-    const mediumFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-      },
-      body: requestBody
-    });
-    
-    const mediumFeeText = await mediumFeeResponse.text();
-    console.log("Medium fee response:", mediumFeeText);
-    const mediumFeeData = JSON.parse(mediumFeeText) as RpcResponse<FeeEstimateResult>;
-    
-    // Get low fee (6 blocks)
+    // Make RPC call to get fee estimation from Bitcoin node - using 6 blocks as base
     const lowFeeRequest = JSON.stringify({
       jsonrpc: '1.0',
       id: 'bitcoin-rpc',
       method: 'estimatesmartfee',
-      params: [6]  // Target 6 blocks for low fee
+      params: [6]  // Target 6 blocks for base fee
     });
     
-    console.log("Requesting low fee estimate for 6 blocks");
+    console.log("Requesting base fee estimate for 6 blocks");
     const lowFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
       method: 'POST',
       headers: {
@@ -376,57 +354,48 @@ app.get('/api/bitcoin/fees', async (req, res) => {
     });
     
     const lowFeeText = await lowFeeResponse.text();
-    console.log("Low fee response:", lowFeeText);
+    console.log("Base fee (6 blocks) response:", lowFeeText);
     const lowFeeData = JSON.parse(lowFeeText) as RpcResponse<FeeEstimateResult>;
     
-    // Get high fee (1 block)
-    const highFeeRequest = JSON.stringify({
-      jsonrpc: '1.0',
-      id: 'bitcoin-rpc',
-      method: 'estimatesmartfee',
-      params: [1]  // Target 1 block for high fee
-    });
-    
-    console.log("Requesting high fee estimate for 1 block");
-    const highFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-      },
-      body: highFeeRequest
-    });
-    
-    const highFeeText = await highFeeResponse.text();
-    console.log("High fee response:", highFeeText);
-    const highFeeData = JSON.parse(highFeeText) as RpcResponse<FeeEstimateResult>;
-    
     // Calculate fee rates
-    // Bitcoin RPC returns BTC/kB, we need sat/vB
-    // 100000000 sats per BTC / 1000 vBytes per kB = 100000 conversion factor
     const CONVERSION_FACTOR = 100000;
     
-    console.log("Raw fee values:");
-    console.log("- Low:", lowFeeData.result?.feerate);
-    console.log("- Medium:", mediumFeeData.result?.feerate);
-    console.log("- High:", highFeeData.result?.feerate);
+    // Get node's 6-block fee rate
+    const baseFeeRate = lowFeeData.result?.feerate || 0.000002;
     
-    // Use lower fallback values that better match current network conditions
-    let medium = Math.round((mediumFeeData.result?.feerate || 0.000003) * CONVERSION_FACTOR);
-    let low = Math.round((lowFeeData.result?.feerate || 0.000002) * CONVERSION_FACTOR);
-    let high = Math.round((highFeeData.result?.feerate || 0.000004) * CONVERSION_FACTOR);
+    console.log("Node's 6-block fee rate:", baseFeeRate);
     
-    console.log("Calculated fee rates before adjustments:");
+    // Convert to sat/vB
+    const baseSatsPerVbyte = Math.round(baseFeeRate * CONVERSION_FACTOR);
+    console.log("Base fee rate in sat/vB:", baseSatsPerVbyte);
+    
+    // Derive other rates from the 6-block rate
+    let low = Math.max(1, baseSatsPerVbyte);
+    let medium = Math.max(low + 1, Math.round(low * 1.5));
+    let high = Math.max(medium + 1, Math.round(low * 2));
+    
+    console.log("Derived fee rates before capping:");
     console.log("- Low:", low, "sat/vB");
     console.log("- Medium:", medium, "sat/vB");
     console.log("- High:", high, "sat/vB");
     
-    // Ensure minimum values and proper ordering
-    low = Math.max(1, low);
-    medium = Math.max(low + 1, medium);
-    high = Math.max(medium + 1, high);
+    // Cap at reasonable maximums
+    const MAX_LOW = 5;
+    const MAX_MEDIUM = 10;
+    const MAX_HIGH = 20;
     
-    console.log("Final fee rates after adjustments:");
+    if (low > MAX_LOW || medium > MAX_MEDIUM || high > MAX_HIGH) {
+      console.log("Capping excessive fee rates");
+      low = Math.min(low, MAX_LOW);
+      medium = Math.min(medium, MAX_MEDIUM);
+      high = Math.min(high, MAX_HIGH);
+      
+      // Re-adjust in case capping broke ordering
+      medium = Math.max(low + 1, medium);
+      high = Math.max(medium + 1, high);
+    }
+    
+    console.log("Final fee rates after all adjustments:");
     console.log("- Low:", low, "sat/vB");
     console.log("- Medium:", medium, "sat/vB");
     console.log("- High:", high, "sat/vB");
@@ -439,7 +408,7 @@ app.get('/api/bitcoin/fees', async (req, res) => {
   } catch (error) {
     console.error('Error processing fee estimation request:', error);
     
-    // Use more reasonable fallback values that match current network conditions
+    // Use reasonable fallback values
     const fallbackResponse = { low: 1, medium: 2, high: 3 };
     console.log("Using fallback fee rates due to error:", fallbackResponse);
     
