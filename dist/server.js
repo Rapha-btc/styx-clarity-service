@@ -11,6 +11,15 @@ const app = express();
 // Enable CORS and JSON parsing
 app.use(cors());
 app.use(express.json());
+// Health check endpoint (no API key required)
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        network: 'testnet',
+        rpcHost: process.env.RPC_HOST,
+        timestamp: new Date().toISOString()
+    });
+});
 // API key authentication middleware
 app.use((req, res, next) => {
     const providedKey = req.headers['x-api-key'];
@@ -28,21 +37,26 @@ function getRpcParams() {
     };
 }
 // Health check endpoint
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+// app.get('/health', (req, res) => {
+//   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// });
 // Main proof endpoint
+// Replace your existing /api/proof/:txid endpoint with this enhanced version
 app.get('/api/proof/:txid', async (req, res) => {
     try {
         const { txid } = req.params;
         let blockHash = req.query.blockHash || '';
-        console.log(`Processing request for txid: ${txid}`);
+        console.log(`🔍 [PROOF] Processing request for txid: ${txid}`);
+        console.log(`🔍 [PROOF] Initial blockHash: "${blockHash}"`);
         // If no blockHash provided, try to get it from the transaction
         if (!blockHash) {
             try {
-                console.log("No blockhash provided, attempting to retrieve transaction info...");
+                console.log("🔄 [PROOF] No blockhash provided, attempting to retrieve transaction info...");
                 const rpcParams = getRpcParams();
-                console.log("RPC Params:", JSON.stringify(rpcParams));
+                console.log("🔧 [PROOF] RPC Params:", JSON.stringify({
+                    ...rpcParams,
+                    rpcPass: rpcParams.rpcPass ? '[REDACTED]' : 'NOT_SET'
+                }));
                 // Make RPC call to get transaction info
                 const requestBody = JSON.stringify({
                     jsonrpc: '1.0',
@@ -50,7 +64,7 @@ app.get('/api/proof/:txid', async (req, res) => {
                     method: 'getrawtransaction',
                     params: [txid, true]
                 });
-                console.log("RPC Request:", requestBody);
+                console.log("📡 [PROOF] RPC Request:", requestBody);
                 const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
                     method: 'POST',
                     headers: {
@@ -61,40 +75,170 @@ app.get('/api/proof/:txid', async (req, res) => {
                 });
                 // Log the raw response
                 const rawResponse = await response.text();
-                console.log("Raw RPC Response:", rawResponse);
+                console.log("📥 [PROOF] Raw RPC Response length:", rawResponse.length);
+                console.log("📥 [PROOF] Raw RPC Response preview:", rawResponse.substring(0, 200));
                 // Parse the response
                 const txInfo = JSON.parse(rawResponse);
-                console.log("Parsed txInfo:", JSON.stringify(txInfo));
+                console.log("📋 [PROOF] Parsed txInfo keys:", Object.keys(txInfo.result || {}));
+                console.log("📋 [PROOF] Transaction version from RPC:", txInfo.result?.version);
+                console.log("📋 [PROOF] Transaction locktime from RPC:", txInfo.result?.locktime);
                 if (txInfo.result && txInfo.result.blockhash) {
                     blockHash = txInfo.result.blockhash;
-                    console.log(`Found blockhash: ${blockHash} for txid: ${txid}`);
+                    console.log(`✅ [PROOF] Found blockhash: ${blockHash} for txid: ${txid}`);
                 }
                 else if (txInfo.error) {
-                    console.error("RPC Error:", JSON.stringify(txInfo.error));
+                    console.error("❌ [PROOF] RPC Error:", JSON.stringify(txInfo.error));
+                    return res.status(500).json({
+                        error: `RPC Error: ${txInfo.error.message}`,
+                        txid: txid
+                    });
                 }
                 else {
-                    console.error("No blockhash found in transaction info");
+                    console.error("❌ [PROOF] No blockhash found in transaction info");
+                    return res.status(500).json({
+                        error: "Transaction not confirmed or not found",
+                        txid: txid
+                    });
                 }
             }
             catch (error) {
-                console.error('Error getting transaction info:', error);
+                console.error('❌ [PROOF] Error getting transaction info:', error);
+                return res.status(500).json({
+                    error: `Failed to get transaction info: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                    txid: txid
+                });
             }
         }
-        console.log(`Using blockhash: "${blockHash}" for getProofData call`);
-        // Get proof data
-        const data = await getProofData(txid, blockHash, getRpcParams());
-        console.log("Proof data retrieved successfully");
-        const pgd = getProofGenerationData(data);
-        console.log("Proof generation data created");
-        const proof = extractProofInfo(pgd, data);
-        console.log("Proof extracted successfully");
+        console.log(`🎯 [PROOF] Using blockhash: "${blockHash}" for getProofData call`);
+        // DEBUG: Let's see what data clarity-bitcoin-client receives
+        console.log(`🔍 [DEBUG] About to debug what clarity-bitcoin-client receives...`);
+        try {
+            // Get the raw transaction
+            const rawTxRequest = JSON.stringify({
+                jsonrpc: '1.0',
+                id: 'debug-tx',
+                method: 'getrawtransaction',
+                params: [txid, true]
+            });
+            const rawTxResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+                },
+                body: rawTxRequest
+            });
+            const rawTxData = await rawTxResponse.json();
+            // Get the block data
+            const blockRequest = JSON.stringify({
+                jsonrpc: '1.0',
+                id: 'debug-block',
+                method: 'getblock',
+                params: [blockHash, true]
+            });
+            const blockResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+                },
+                body: blockRequest
+            });
+            const blockData = await blockResponse.json();
+            // Check if any of these numbers match our mystery "109112198"
+            const mysteryNumber = 109112198;
+            // Convert mystery number to hex to see if it makes sense
+            console.log(`🔍 [DEBUG] Mystery number in hex: 0x${mysteryNumber.toString(16)}`);
+        }
+        catch (debugError) {
+            console.error(`❌ [DEBUG] Error during debug:`, debugError);
+        }
+        console.log(`🔍 [DEBUG] Debug complete, now calling getProofData...`);
+        console.log(`🔄 [PROOF] About to call getProofData from clarity-bitcoin-client...`);
+        // Get proof data with enhanced error handling
+        let data;
+        try {
+            const rpcParams = getRpcParams();
+            console.log(`🔧 [PROOF] Final RPC params for getProofData:`, {
+                rpcHost: rpcParams.rpcHost,
+                rpcPort: rpcParams.rpcPort,
+                rpcUser: rpcParams.rpcUser ? 'SET' : 'NOT_SET',
+                rpcPass: rpcParams.rpcPass ? 'SET' : 'NOT_SET'
+            });
+            data = await getProofData(txid, blockHash, rpcParams);
+            console.log("✅ [PROOF] getProofData completed successfully");
+            console.log("📋 [PROOF] Data structure:", {
+                hasData: !!data,
+                dataKeys: data ? Object.keys(data) : [],
+                dataType: typeof data
+            });
+        }
+        catch (proofError) {
+            // console.error("❌ [PROOF] getProofData failed:");
+            // console.error("❌ [PROOF] Error type:", proofError.constructor.name);
+            // console.error("❌ [PROOF] Error message:", (proofError as Error).message);
+            // console.error("❌ [PROOF] Error stack:", proofError.stack?.split('\n').slice(0, 5));
+            // Check if it's the specific version error
+            if (proofError.message?.includes('Unknown version')) {
+                console.error("🚨 [PROOF] This is the 'Unknown version' error we've been tracking!");
+                console.error("🚨 [PROOF] Full error details:", JSON.stringify({
+                    message: proofError.message,
+                    name: proofError.name,
+                    txid: txid,
+                    blockHash: blockHash
+                }, null, 2));
+            }
+            return res.status(500).json({
+                error: `Failed to retrieve proof generation data for txid: ${txid} - wrapped error: ${proofError.message}`,
+                txid: txid,
+                details: {
+                    errorType: proofError.constructor.name,
+                    blockHash: blockHash,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
+        console.log("🔄 [PROOF] About to call getProofGenerationData...");
+        let pgd;
+        try {
+            pgd = getProofGenerationData(data);
+            console.log("✅ [PROOF] getProofGenerationData completed");
+        }
+        catch (pgdError) {
+            console.error("❌ [PROOF] getProofGenerationData failed:", pgdError);
+            return res.status(500).json({
+                error: `Failed during proof generation: ${pgdError.message}`,
+                txid: txid
+            });
+        }
+        console.log("🔄 [PROOF] About to call extractProofInfo...");
+        let proof;
+        try {
+            proof = extractProofInfo(pgd, data);
+            console.log("✅ [PROOF] extractProofInfo completed");
+            console.log("📋 [PROOF] Final proof structure:", {
+                hasProof: !!proof,
+                proofKeys: proof ? Object.keys(proof) : [],
+                segwit: proof?.segwit,
+                height: proof?.height
+            });
+        }
+        catch (extractError) {
+            console.error("❌ [PROOF] extractProofInfo failed:", extractError);
+            return res.status(500).json({
+                error: `Failed during proof extraction: ${extractError.message}`,
+                txid: txid
+            });
+        }
+        console.log("🎉 [PROOF] All steps completed successfully, returning proof");
         res.json(proof);
     }
     catch (error) {
-        console.error('Error processing request:', error);
+        console.error('❌ [PROOF] Unexpected error in proof endpoint:', error);
         res.status(500).json({
             error: error instanceof Error ? error.message : 'Unknown error',
-            txid: req.params.txid
+            txid: req.params.txid,
+            timestamp: new Date().toISOString()
         });
     }
 });
@@ -186,30 +330,14 @@ app.get('/api/bitcoin/fees', async (req, res) => {
             return res.status(401).json({ error: 'Unauthorized: Invalid API key' });
         }
         console.log("Processing Bitcoin fee estimation request");
-        // Make RPC call to get fee estimation from Bitcoin node
-        const requestBody = JSON.stringify({
-            jsonrpc: '1.0',
-            id: 'bitcoin-rpc',
-            method: 'estimatesmartfee',
-            params: [2] // Target 2 blocks for medium fee
-        });
-        const mediumFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-            },
-            body: requestBody
-        });
-        const mediumFeeText = await mediumFeeResponse.text();
-        const mediumFeeData = JSON.parse(mediumFeeText);
-        // Get low fee (6 blocks)
+        // Make RPC call to get fee estimation from Bitcoin node - using 6 blocks as base
         const lowFeeRequest = JSON.stringify({
             jsonrpc: '1.0',
             id: 'bitcoin-rpc',
             method: 'estimatesmartfee',
-            params: [6] // Target 6 blocks for low fee
+            params: [6] // Target 6 blocks for base fee
         });
+        console.log("Requesting base fee estimate for 6 blocks");
         const lowFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
             method: 'POST',
             headers: {
@@ -219,35 +347,41 @@ app.get('/api/bitcoin/fees', async (req, res) => {
             body: lowFeeRequest
         });
         const lowFeeText = await lowFeeResponse.text();
+        console.log("Base fee (6 blocks) response:", lowFeeText);
         const lowFeeData = JSON.parse(lowFeeText);
-        // Get high fee (1 block)
-        const highFeeRequest = JSON.stringify({
-            jsonrpc: '1.0',
-            id: 'bitcoin-rpc',
-            method: 'estimatesmartfee',
-            params: [1] // Target 1 block for high fee
-        });
-        const highFeeResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-            },
-            body: highFeeRequest
-        });
-        const highFeeText = await highFeeResponse.text();
-        const highFeeData = JSON.parse(highFeeText);
         // Calculate fee rates
-        // Bitcoin RPC returns BTC/kB, we need sat/vB
-        // 100000000 sats per BTC / 1000 vBytes per kB = 100000 conversion factor
         const CONVERSION_FACTOR = 100000;
-        let medium = Math.round((mediumFeeData.result?.feerate || 0.0001) * CONVERSION_FACTOR);
-        let low = Math.round((lowFeeData.result?.feerate || 0.00005) * CONVERSION_FACTOR);
-        let high = Math.round((highFeeData.result?.feerate || 0.0002) * CONVERSION_FACTOR);
-        // Ensure minimum values and proper ordering
-        low = Math.max(1, low);
-        medium = Math.max(low + 1, medium);
-        high = Math.max(medium + 1, high);
+        // Get node's 6-block fee rate
+        const baseFeeRate = lowFeeData.result?.feerate || 0.000002;
+        console.log("Node's 6-block fee rate:", baseFeeRate);
+        // Convert to sat/vB
+        const baseSatsPerVbyte = Math.round(baseFeeRate * CONVERSION_FACTOR);
+        console.log("Base fee rate in sat/vB:", baseSatsPerVbyte);
+        // Derive other rates from the 6-block rate
+        let low = Math.max(1, baseSatsPerVbyte);
+        let medium = Math.max(low + 1, Math.round(low * 1.5));
+        let high = Math.max(medium + 1, Math.round(low * 2));
+        console.log("Derived fee rates before capping:");
+        console.log("- Low:", low, "sat/vB");
+        console.log("- Medium:", medium, "sat/vB");
+        console.log("- High:", high, "sat/vB");
+        // Cap at reasonable maximums
+        const MAX_LOW = 5;
+        const MAX_MEDIUM = 10;
+        const MAX_HIGH = 20;
+        if (low > MAX_LOW || medium > MAX_MEDIUM || high > MAX_HIGH) {
+            console.log("Capping excessive fee rates");
+            low = Math.min(low, MAX_LOW);
+            medium = Math.min(medium, MAX_MEDIUM);
+            high = Math.min(high, MAX_HIGH);
+            // Re-adjust in case capping broke ordering
+            medium = Math.max(low + 1, medium);
+            high = Math.max(medium + 1, high);
+        }
+        console.log("Final fee rates after all adjustments:");
+        console.log("- Low:", low, "sat/vB");
+        console.log("- Medium:", medium, "sat/vB");
+        console.log("- High:", high, "sat/vB");
         res.json({
             low,
             medium,
@@ -256,9 +390,12 @@ app.get('/api/bitcoin/fees', async (req, res) => {
     }
     catch (error) {
         console.error('Error processing fee estimation request:', error);
+        // Use reasonable fallback values
+        const fallbackResponse = { low: 1, medium: 2, high: 3 };
+        console.log("Using fallback fee rates due to error:", fallbackResponse);
         res.status(500).json({
             error: error instanceof Error ? error.message : 'Unknown error',
-            fallback: { low: 1, medium: 2, high: 5 }
+            fallback: fallbackResponse
         });
     }
 });
