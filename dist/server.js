@@ -11,6 +11,13 @@ const app = express();
 // Enable CORS and JSON parsing
 app.use(cors());
 app.use(express.json());
+const kennyProofCache = new Map();
+// Track ongoing Kenny requests to prevent duplicates
+const ongoingKennyRequests = new Map();
+// Rate limiting for Kenny endpoint (optional but recommended)
+const kennyRequestTracker = new Map();
+// Track ongoing jobs for async processing
+const kennyJobs = new Map();
 // Health check endpoint (no API key required)
 app.get('/health', (req, res) => {
     res.json({
@@ -653,131 +660,172 @@ app.get('/api/address/:address/utxo', async (req, res) => {
         });
     }
 });
-// Add this to your server.ts file, after your existing endpoints
-// Kenny's bitcoin-tx-proof endpoint
+const KENNY_RATE_LIMIT = 5; // Max 5 Kenny requests per hour per API key
+const KENNY_RATE_WINDOW = 60 * 60 * 1000; // 1 hour
+// Start Kenny processing (returns immediately)
+app.post('/api/proof-kenny-start/:txid', async (req, res) => {
+    try {
+        const { txid } = req.params;
+        const jobId = `kenny-${txid}-${Date.now()}`;
+        console.log(`🔄 [KENNY-START] Starting Kenny job ${jobId} for txid: ${txid}`);
+        // Check if already cached
+        if (kennyProofCache.has(txid)) {
+            console.log(`✅ [KENNY-START] Found cached result for txid: ${txid}`);
+            return res.json({
+                jobId,
+                status: 'completed',
+                result: kennyProofCache.get(txid)
+            });
+        }
+        // Check if already processing
+        if (ongoingKennyRequests.has(txid)) {
+            console.log(`⏳ [KENNY-START] Already processing txid: ${txid}`);
+            return res.json({
+                jobId: `existing-${txid}`,
+                status: 'processing'
+            });
+        }
+        // Start new job
+        kennyJobs.set(jobId, {
+            status: 'processing',
+            startTime: Date.now()
+        });
+        // Start processing in background (don't await)
+        const kennyPromise = processKennyRequest(txid);
+        ongoingKennyRequests.set(txid, kennyPromise);
+        // Handle completion/failure in background
+        kennyPromise
+            .then(result => {
+            kennyProofCache.set(txid, result);
+            kennyJobs.set(jobId, {
+                status: 'completed',
+                result,
+                startTime: kennyJobs.get(jobId)?.startTime || Date.now()
+            });
+            console.log(`✅ [KENNY-JOB] Job ${jobId} completed`);
+        })
+            .catch(error => {
+            kennyJobs.set(jobId, {
+                status: 'failed',
+                error: error instanceof Error ? error.message : 'Unknown error',
+                startTime: kennyJobs.get(jobId)?.startTime || Date.now()
+            });
+            console.error(`❌ [KENNY-JOB] Job ${jobId} failed:`, error);
+        })
+            .finally(() => {
+            ongoingKennyRequests.delete(txid);
+        });
+        // Return immediately
+        res.json({
+            jobId,
+            status: 'processing',
+            message: 'Kenny processing started'
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            error: error instanceof Error ? error.message : 'Unknown error'
+        });
+    }
+});
+// Check job status
+app.get('/api/proof-kenny-status/:jobId', async (req, res) => {
+    try {
+        const { jobId } = req.params;
+        const job = kennyJobs.get(jobId);
+        if (!job) {
+            return res.status(404).json({
+                error: 'Job not found',
+                jobId
+            });
+        }
+        const runtime = Math.round((Date.now() - job.startTime) / 1000);
+        res.json({
+            jobId,
+            status: job.status,
+            runtime: `${runtime} seconds`,
+            result: job.result,
+            error: job.error
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            error: error instanceof Error ? error.message : 'Unknown error'
+        });
+    }
+});
 app.get('/api/proof-kenny/:txid', async (req, res) => {
     try {
         const { txid } = req.params;
-        let blockHash = req.query.blockHash || '';
+        const apiKey = req.headers['x-api-key'];
         console.log(`🔍 [KENNY] Processing request for txid: ${txid}`);
-        console.log(`🔍 [KENNY] Initial blockHash: "${blockHash}"`);
-        // Import Kenny's tool
-        const { bitcoinTxProof } = await import('bitcoin-tx-proof');
-        // If no blockHash provided, try to get it from the transaction
-        if (!blockHash) {
+        // STEP 1: RATE LIMITING (optional but recommended)
+        const now = Date.now();
+        const rateLimitKey = `${apiKey}-kenny`;
+        const currentUsage = kennyRequestTracker.get(rateLimitKey);
+        if (currentUsage) {
+            if (now < currentUsage.resetTime) {
+                if (currentUsage.count >= KENNY_RATE_LIMIT) {
+                    return res.status(429).json({
+                        error: 'Rate limit exceeded for Kenny endpoint. Max 5 requests per hour.',
+                        retryAfter: Math.ceil((currentUsage.resetTime - now) / 1000)
+                    });
+                }
+                currentUsage.count++;
+            }
+            else {
+                kennyRequestTracker.set(rateLimitKey, { count: 1, resetTime: now + KENNY_RATE_WINDOW });
+            }
+        }
+        else {
+            kennyRequestTracker.set(rateLimitKey, { count: 1, resetTime: now + KENNY_RATE_WINDOW });
+        }
+        console.log(`🔍 [KENNY] Rate limit check passed (${kennyRequestTracker.get(rateLimitKey)?.count}/${KENNY_RATE_LIMIT})`);
+        // STEP 2: CHECK CACHE FIRST
+        if (kennyProofCache.has(txid)) {
+            console.log(`✅ [CACHE] Found cached Kenny proof for txid: ${txid}`);
+            return res.json(kennyProofCache.get(txid));
+        }
+        // STEP 3: CHECK IF ALREADY PROCESSING
+        if (ongoingKennyRequests.has(txid)) {
+            console.log(`⏳ [QUEUE] Kenny request already in progress for txid: ${txid}, waiting for result...`);
             try {
-                console.log("🔄 [KENNY] No blockhash provided, attempting to retrieve transaction info...");
-                const requestBody = JSON.stringify({
-                    jsonrpc: '1.0',
-                    id: 'bitcoin-rpc',
-                    method: 'getrawtransaction',
-                    params: [txid, true]
-                });
-                const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-                    },
-                    body: requestBody
-                });
-                const rawResponse = await response.text();
-                const txInfo = JSON.parse(rawResponse);
-                if (txInfo.result && txInfo.result.blockhash) {
-                    blockHash = txInfo.result.blockhash;
-                    console.log(`✅ [KENNY] Found blockhash: ${blockHash} for txid: ${txid}`);
-                }
-                else if (txInfo.error) {
-                    console.error("❌ [KENNY] RPC Error:", JSON.stringify(txInfo.error));
-                    return res.status(500).json({
-                        error: `RPC Error: ${txInfo.error.message}`,
-                        txid: txid
-                    });
-                }
-                else {
-                    console.error("❌ [KENNY] No blockhash found in transaction info");
-                    return res.status(500).json({
-                        error: "Transaction not confirmed or not found",
-                        txid: txid
-                    });
-                }
+                const result = await ongoingKennyRequests.get(txid);
+                return res.json(result);
             }
             catch (error) {
-                console.error('❌ [KENNY] Error getting transaction info:', error);
                 return res.status(500).json({
-                    error: `Failed to get transaction info: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                    error: error instanceof Error ? error.message : 'Unknown error',
                     txid: txid
                 });
             }
         }
-        // Get block height from block hash
-        let blockHeight;
+        // STEP 4: START NEW KENNY PROCESSING
+        console.log(`🔄 [KENNY] Starting new Kenny request for txid: ${txid}`);
+        const kennyPromise = processKennyRequest(txid);
+        ongoingKennyRequests.set(txid, kennyPromise);
         try {
-            const blockRequestBody = JSON.stringify({
-                jsonrpc: '1.0',
-                id: 'bitcoin-rpc',
-                method: 'getblock',
-                params: [blockHash]
-            });
-            const blockResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-                },
-                body: blockRequestBody
-            });
-            const blockRawResponse = await blockResponse.text();
-            const blockInfo = JSON.parse(blockRawResponse);
-            if (blockInfo.result && blockInfo.result.height) {
-                blockHeight = blockInfo.result.height;
-                console.log(`✅ [KENNY] Found block height: ${blockHeight} for block: ${blockHash}`);
-            }
-            else {
-                throw new Error("Could not get block height");
-            }
+            const result = await kennyPromise;
+            // CACHE THE RESULT (proof data never changes for confirmed transactions)
+            kennyProofCache.set(txid, result);
+            console.log(`✅ [CACHE] Cached Kenny proof for txid: ${txid}`);
+            res.json(result);
         }
         catch (error) {
-            console.error('❌ [KENNY] Error getting block height:', error);
-            return res.status(500).json({
-                error: `Failed to get block height: ${error instanceof Error ? error.message : 'Unknown error'}`,
-                txid: txid
+            console.error('❌ [KENNY] Kenny processing failed:', error);
+            res.status(500).json({
+                error: error instanceof Error ? error.message : 'Unknown error',
+                txid: txid,
+                timestamp: new Date().toISOString()
             });
         }
-        console.log(`🎯 [KENNY] Using Kenny's tool with txid: ${txid}, blockHeight: ${blockHeight}`);
-        // Configure Kenny's RPC parameters
-        const btcRPCConfig = {
-            url: `http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`,
-            username: process.env.RPC_USER || '',
-            password: process.env.RPC_PASS || ''
-        };
-        console.log(`🔧 [KENNY] RPC config:`, {
-            url: btcRPCConfig.url,
-            username: btcRPCConfig.username ? 'SET' : 'NOT_SET',
-            password: btcRPCConfig.password ? 'SET' : 'NOT_SET'
-        });
-        // Use Kenny's bitcoinTxProof function
-        console.log(`🔄 [KENNY] Calling Kenny's bitcoinTxProof...`);
-        const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig);
-        console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
-        console.log("📋 [KENNY] Proof structure:", {
-            hasProof: !!proof,
-            proofKeys: proof ? Object.keys(proof) : [],
-            blockHeight: proof?.blockHeight,
-            txIndex: proof?.txIndex
-        });
-        // Convert Kenny's proof format to match your existing format
-        // This ensures compatibility with your existing backend code
-        const formattedProof = {
-            ...proof,
-            segwit: true, // Kenny's tool handles segwit transactions
-            height: proof.blockHeight
-        };
-        console.log("🎉 [KENNY] Returning formatted proof");
-        res.json(formattedProof);
+        finally {
+            // Clean up ongoing request tracker
+            ongoingKennyRequests.delete(txid);
+        }
     }
     catch (error) {
-        console.error('❌ [KENNY] Unexpected error in Kenny proof endpoint:', error);
+        console.error('❌ [KENNY] Unexpected error:', error);
         res.status(500).json({
             error: error instanceof Error ? error.message : 'Unknown error',
             txid: req.params.txid,
@@ -785,6 +833,127 @@ app.get('/api/proof-kenny/:txid', async (req, res) => {
         });
     }
 });
+// Check Kenny status by txid (cleaner for cron jobs)
+app.get('/api/proof-kenny-status-by-txid/:txid', async (req, res) => {
+    try {
+        const { txid } = req.params;
+        console.log(`🔍 [KENNY-STATUS] Checking status for txid: ${txid}`);
+        // Check if cached (completed)
+        if (kennyProofCache.has(txid)) {
+            return res.json({
+                txid,
+                status: 'completed',
+                result: kennyProofCache.get(txid),
+                message: 'Found in cache'
+            });
+        }
+        // Check if currently processing
+        if (ongoingKennyRequests.has(txid)) {
+            return res.json({
+                txid,
+                status: 'processing',
+                message: 'Currently being processed'
+            });
+        }
+        // Not found - either never started or failed
+        return res.json({
+            txid,
+            status: 'not_found',
+            message: 'No Kenny job found for this txid'
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            error: error instanceof Error ? error.message : 'Unknown error',
+            txid: req.params.txid
+        });
+    }
+});
+// Separate function to handle the actual Kenny processing
+async function processKennyRequest(txid) {
+    let blockHash = '';
+    // Import Kenny's tool
+    const { bitcoinTxProof } = await import('bitcoin-tx-proof');
+    // Get transaction info to find blockhash
+    try {
+        console.log("🔄 [KENNY] Getting transaction info...");
+        const requestBody = JSON.stringify({
+            jsonrpc: '1.0',
+            id: 'bitcoin-rpc',
+            method: 'getrawtransaction',
+            params: [txid, true]
+        });
+        const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+            },
+            body: requestBody
+        });
+        const rawResponse = await response.text();
+        const txInfo = JSON.parse(rawResponse);
+        if (txInfo.result && txInfo.result.blockhash) {
+            blockHash = txInfo.result.blockhash;
+            console.log(`✅ [KENNY] Found blockhash: ${blockHash}`);
+        }
+        else {
+            throw new Error("Transaction not confirmed or not found");
+        }
+    }
+    catch (error) {
+        throw new Error(`Failed to get transaction info: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+    // Get block height from block hash
+    let blockHeight;
+    try {
+        const blockRequestBody = JSON.stringify({
+            jsonrpc: '1.0',
+            id: 'bitcoin-rpc',
+            method: 'getblock',
+            params: [blockHash]
+        });
+        const blockResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+            },
+            body: blockRequestBody
+        });
+        const blockRawResponse = await blockResponse.text();
+        const blockInfo = JSON.parse(blockRawResponse);
+        if (blockInfo.result && blockInfo.result.height) {
+            blockHeight = blockInfo.result.height;
+            console.log(`✅ [KENNY] Found block height: ${blockHeight}`);
+        }
+        else {
+            throw new Error("Could not get block height");
+        }
+    }
+    catch (error) {
+        throw new Error(`Failed to get block height: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+    console.log(`🎯 [KENNY] Using Kenny's tool with txid: ${txid}, blockHeight: ${blockHeight}`);
+    // Configure Kenny's RPC parameters
+    const btcRPCConfig = {
+        url: `http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`,
+        username: process.env.RPC_USER || '',
+        password: process.env.RPC_PASS || ''
+    };
+    // Use Kenny's bitcoinTxProof function
+    console.log(`🔄 [KENNY] Calling Kenny's bitcoinTxProof...`);
+    const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig);
+    console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
+    // Convert Kenny's proof format to match your existing format
+    const formattedProof = {
+        ...proof,
+        segwit: true, // Kenny's tool handles segwit transactions
+        height: proof.blockHeight
+    };
+    console.log("🎉 [KENNY] Returning formatted proof");
+    return formattedProof;
+}
 // Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

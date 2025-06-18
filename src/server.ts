@@ -1084,6 +1084,47 @@ app.get('/api/proof-kenny/:txid', async (req, res) => {
   }
 });
 
+// Check Kenny status by txid (cleaner for cron jobs)
+app.get('/api/proof-kenny-status-by-txid/:txid', async (req, res) => {
+  try {
+    const { txid } = req.params;
+    
+    console.log(`🔍 [KENNY-STATUS] Checking status for txid: ${txid}`);
+    
+    // Check if cached (completed)
+    if (kennyProofCache.has(txid)) {
+      return res.json({
+        txid,
+        status: 'completed',
+        result: kennyProofCache.get(txid),
+        message: 'Found in cache'
+      });
+    }
+    
+    // Check if currently processing
+    if (ongoingKennyRequests.has(txid)) {
+      return res.json({
+        txid,
+        status: 'processing',
+        message: 'Currently being processed'
+      });
+    }
+    
+    // Not found - either never started or failed
+    return res.json({
+      txid,
+      status: 'not_found',
+      message: 'No Kenny job found for this txid'
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Unknown error',
+      txid: req.params.txid
+    });
+  }
+});
+
 // Separate function to handle the actual Kenny processing
 async function processKennyRequest(txid: string): Promise<any> {
   let blockHash = '';
