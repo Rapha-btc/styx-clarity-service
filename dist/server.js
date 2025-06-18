@@ -232,6 +232,8 @@ app.get('/api/proof/:txid', async (req, res) => {
         }
         catch (extractError) {
             console.error("❌ [PROOF] extractProofInfo failed:", extractError);
+            console.error("❌ [PROOF] Error message:", extractError.message);
+            console.error("❌ [PROOF] Error stack:", extractError.stack);
             return res.status(500).json({
                 error: `Failed during proof extraction: ${extractError.message}`,
                 txid: txid
@@ -947,9 +949,15 @@ async function processKennyRequest(txid) {
     console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
     // Convert Kenny's proof format to match your existing format
     const formattedProof = {
-        ...proof,
-        segwit: true, // Kenny's tool handles segwit transactions
-        height: proof.blockHeight
+        segwit: true,
+        height: proof.blockHeight,
+        header: proof.blockHeader,
+        txIndex: proof.txIndex,
+        treeDepth: proof.merkleProofDepth,
+        wproof: proof.witnessMerkleProof ? proof.witnessMerkleProof.split('') : [], // Convert string to array if needed
+        computedWtxidRoot: proof.witnessReservedValue, // or derive from other fields
+        ctxHex: proof.coinbaseTransaction,
+        cproof: proof.coinbaseMerkleProof ? proof.coinbaseMerkleProof.split('') : [] // Convert string to array if needed
     };
     console.log("🎉 [KENNY] Returning formatted proof");
     return formattedProof;

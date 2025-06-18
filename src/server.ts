@@ -373,25 +373,26 @@ app.get('/api/proof/:txid', async (req, res) => {
       });
     }
     
-    console.log("🔄 [PROOF] About to call extractProofInfo...");
-    let proof;
-    try {
-      proof = extractProofInfo(pgd, data);
-      console.log("✅ [PROOF] extractProofInfo completed");
-      console.log("📋 [PROOF] Final proof structure:", {
-        hasProof: !!proof,
-        proofKeys: proof ? Object.keys(proof) : [],
-        segwit: proof?.segwit,
-        height: proof?.height
-      });
-    } catch (extractError: unknown) {
-      console.error("❌ [PROOF] extractProofInfo failed:", extractError);
-      return res.status(500).json({
-        error: `Failed during proof extraction: ${(extractError as Error).message}`,
-        txid: txid
-      });
-    }
-    
+console.log("🔄 [PROOF] About to call extractProofInfo...");
+let proof;
+try {
+  proof = extractProofInfo(pgd, data);
+  console.log("✅ [PROOF] extractProofInfo completed");
+  console.log("📋 [PROOF] Final proof structure:", {
+    hasProof: !!proof,
+    proofKeys: proof ? Object.keys(proof) : [],
+    segwit: proof?.segwit,
+    height: proof?.height
+  });
+} catch (extractError: unknown) {
+  console.error("❌ [PROOF] extractProofInfo failed:", extractError);
+  console.error("❌ [PROOF] Error message:", (extractError as Error).message);
+  console.error("❌ [PROOF] Error stack:", (extractError as Error).stack);
+  return res.status(500).json({
+    error: `Failed during proof extraction: ${(extractError as Error).message}`,
+    txid: txid
+  });
+}    
     console.log("🎉 [PROOF] All steps completed successfully, returning proof");
     res.json(proof);
     
@@ -1213,11 +1214,17 @@ async function processKennyRequest(txid: string): Promise<any> {
   console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
   
   // Convert Kenny's proof format to match your existing format
-  const formattedProof = {
-    ...proof,
-    segwit: true, // Kenny's tool handles segwit transactions
-    height: proof.blockHeight
-  };
+const formattedProof = {
+  segwit: true,
+  height: proof.blockHeight,
+  header: proof.blockHeader,
+  txIndex: proof.txIndex,
+  treeDepth: proof.merkleProofDepth,
+  wproof: proof.witnessMerkleProof ? proof.witnessMerkleProof.split('') : [], // Convert string to array if needed
+  computedWtxidRoot: proof.witnessReservedValue, // or derive from other fields
+  ctxHex: proof.coinbaseTransaction,
+  cproof: proof.coinbaseMerkleProof ? proof.coinbaseMerkleProof.split('') : [] // Convert string to array if needed
+};
   
   console.log("🎉 [KENNY] Returning formatted proof");
   return formattedProof;
