@@ -16,6 +16,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const kennyProofCache = new Map<string, any>();
+
+// Track ongoing Kenny requests to prevent duplicates
+const ongoingKennyRequests = new Map<string, Promise<any>>();
+
+// Rate limiting for Kenny endpoint (optional but recommended)
+const kennyRequestTracker = new Map<string, { count: number; resetTime: number }>();
+
+// Track ongoing jobs for async processing
+const kennyJobs = new Map<string, {
+  status: 'processing' | 'completed' | 'failed';
+  result?: any;
+  error?: string;
+  startTime: number;
+}>();
+
 // Health check endpoint (no API key required)
 app.get('/health', (req, res) => {
   res.json({ 
@@ -874,17 +890,113 @@ app.get('/api/address/:address/utxo', async (req, res) => {
   }
 });
 
-const kennyProofCache = new Map<string, any>();
-
-// Track ongoing Kenny requests to prevent duplicates
-const ongoingKennyRequests = new Map<string, Promise<any>>();
-
-// Rate limiting for Kenny endpoint (optional but recommended)
-const kennyRequestTracker = new Map<string, { count: number; resetTime: number }>();
 const KENNY_RATE_LIMIT = 5; // Max 5 Kenny requests per hour per API key
 const KENNY_RATE_WINDOW = 60 * 60 * 1000; // 1 hour
 
-// Replace your existing Kenny endpoint with this secure version
+// Start Kenny processing (returns immediately)
+app.post('/api/proof-kenny-start/:txid', async (req, res) => {
+  try {
+    const { txid } = req.params;
+    const jobId = `kenny-${txid}-${Date.now()}`;
+    
+    console.log(`🔄 [KENNY-START] Starting Kenny job ${jobId} for txid: ${txid}`);
+    
+    // Check if already cached
+    if (kennyProofCache.has(txid)) {
+      console.log(`✅ [KENNY-START] Found cached result for txid: ${txid}`);
+      return res.json({
+        jobId,
+        status: 'completed',
+        result: kennyProofCache.get(txid)
+      });
+    }
+    
+    // Check if already processing
+    if (ongoingKennyRequests.has(txid)) {
+      console.log(`⏳ [KENNY-START] Already processing txid: ${txid}`);
+      return res.json({
+        jobId: `existing-${txid}`,
+        status: 'processing'
+      });
+    }
+    
+    // Start new job
+    kennyJobs.set(jobId, {
+      status: 'processing',
+      startTime: Date.now()
+    });
+    
+    // Start processing in background (don't await)
+    const kennyPromise = processKennyRequest(txid);
+    ongoingKennyRequests.set(txid, kennyPromise);
+    
+    // Handle completion/failure in background
+    kennyPromise
+      .then(result => {
+        kennyProofCache.set(txid, result);
+        kennyJobs.set(jobId, {
+          status: 'completed',
+          result,
+          startTime: kennyJobs.get(jobId)?.startTime || Date.now()
+        });
+        console.log(`✅ [KENNY-JOB] Job ${jobId} completed`);
+      })
+      .catch(error => {
+        kennyJobs.set(jobId, {
+          status: 'failed',
+          error: error instanceof Error ? error.message : 'Unknown error',
+          startTime: kennyJobs.get(jobId)?.startTime || Date.now()
+        });
+        console.error(`❌ [KENNY-JOB] Job ${jobId} failed:`, error);
+      })
+      .finally(() => {
+        ongoingKennyRequests.delete(txid);
+      });
+    
+    // Return immediately
+    res.json({
+      jobId,
+      status: 'processing',
+      message: 'Kenny processing started'
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Check job status
+app.get('/api/proof-kenny-status/:jobId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    const job = kennyJobs.get(jobId);
+    if (!job) {
+      return res.status(404).json({
+        error: 'Job not found',
+        jobId
+      });
+    }
+    
+    const runtime = Math.round((Date.now() - job.startTime) / 1000);
+    
+    res.json({
+      jobId,
+      status: job.status,
+      runtime: `${runtime} seconds`,
+      result: job.result,
+      error: job.error
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 app.get('/api/proof-kenny/:txid', async (req, res) => {
   try {
     const { txid } = req.params;
