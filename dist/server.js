@@ -653,6 +653,138 @@ app.get('/api/address/:address/utxo', async (req, res) => {
         });
     }
 });
+// Add this to your server.ts file, after your existing endpoints
+// Kenny's bitcoin-tx-proof endpoint
+app.get('/api/proof-kenny/:txid', async (req, res) => {
+    try {
+        const { txid } = req.params;
+        let blockHash = req.query.blockHash || '';
+        console.log(`🔍 [KENNY] Processing request for txid: ${txid}`);
+        console.log(`🔍 [KENNY] Initial blockHash: "${blockHash}"`);
+        // Import Kenny's tool
+        const { bitcoinTxProof } = await import('bitcoin-tx-proof');
+        // If no blockHash provided, try to get it from the transaction
+        if (!blockHash) {
+            try {
+                console.log("🔄 [KENNY] No blockhash provided, attempting to retrieve transaction info...");
+                const requestBody = JSON.stringify({
+                    jsonrpc: '1.0',
+                    id: 'bitcoin-rpc',
+                    method: 'getrawtransaction',
+                    params: [txid, true]
+                });
+                const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+                    },
+                    body: requestBody
+                });
+                const rawResponse = await response.text();
+                const txInfo = JSON.parse(rawResponse);
+                if (txInfo.result && txInfo.result.blockhash) {
+                    blockHash = txInfo.result.blockhash;
+                    console.log(`✅ [KENNY] Found blockhash: ${blockHash} for txid: ${txid}`);
+                }
+                else if (txInfo.error) {
+                    console.error("❌ [KENNY] RPC Error:", JSON.stringify(txInfo.error));
+                    return res.status(500).json({
+                        error: `RPC Error: ${txInfo.error.message}`,
+                        txid: txid
+                    });
+                }
+                else {
+                    console.error("❌ [KENNY] No blockhash found in transaction info");
+                    return res.status(500).json({
+                        error: "Transaction not confirmed or not found",
+                        txid: txid
+                    });
+                }
+            }
+            catch (error) {
+                console.error('❌ [KENNY] Error getting transaction info:', error);
+                return res.status(500).json({
+                    error: `Failed to get transaction info: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                    txid: txid
+                });
+            }
+        }
+        // Get block height from block hash
+        let blockHeight;
+        try {
+            const blockRequestBody = JSON.stringify({
+                jsonrpc: '1.0',
+                id: 'bitcoin-rpc',
+                method: 'getblock',
+                params: [blockHash]
+            });
+            const blockResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+                },
+                body: blockRequestBody
+            });
+            const blockRawResponse = await blockResponse.text();
+            const blockInfo = JSON.parse(blockRawResponse);
+            if (blockInfo.result && blockInfo.result.height) {
+                blockHeight = blockInfo.result.height;
+                console.log(`✅ [KENNY] Found block height: ${blockHeight} for block: ${blockHash}`);
+            }
+            else {
+                throw new Error("Could not get block height");
+            }
+        }
+        catch (error) {
+            console.error('❌ [KENNY] Error getting block height:', error);
+            return res.status(500).json({
+                error: `Failed to get block height: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                txid: txid
+            });
+        }
+        console.log(`🎯 [KENNY] Using Kenny's tool with txid: ${txid}, blockHeight: ${blockHeight}`);
+        // Configure Kenny's RPC parameters
+        const btcRPCConfig = {
+            url: `http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`,
+            username: process.env.RPC_USER || '',
+            password: process.env.RPC_PASS || ''
+        };
+        console.log(`🔧 [KENNY] RPC config:`, {
+            url: btcRPCConfig.url,
+            username: btcRPCConfig.username ? 'SET' : 'NOT_SET',
+            password: btcRPCConfig.password ? 'SET' : 'NOT_SET'
+        });
+        // Use Kenny's bitcoinTxProof function
+        console.log(`🔄 [KENNY] Calling Kenny's bitcoinTxProof...`);
+        const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig);
+        console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
+        console.log("📋 [KENNY] Proof structure:", {
+            hasProof: !!proof,
+            proofKeys: proof ? Object.keys(proof) : [],
+            blockHeight: proof?.blockHeight,
+            txIndex: proof?.txIndex
+        });
+        // Convert Kenny's proof format to match your existing format
+        // This ensures compatibility with your existing backend code
+        const formattedProof = {
+            ...proof,
+            segwit: true, // Kenny's tool handles segwit transactions
+            height: proof.blockHeight
+        };
+        console.log("🎉 [KENNY] Returning formatted proof");
+        res.json(formattedProof);
+    }
+    catch (error) {
+        console.error('❌ [KENNY] Unexpected error in Kenny proof endpoint:', error);
+        res.status(500).json({
+            error: error instanceof Error ? error.message : 'Unknown error',
+            txid: req.params.txid,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
 // Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

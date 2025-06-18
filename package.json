@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "axios": "^1.5.0",
+    "bitcoin-tx-proof": "^1.0.0",
     "clarity-bitcoin-client": "^1.0.18",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
