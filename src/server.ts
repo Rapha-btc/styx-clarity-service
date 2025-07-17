@@ -1126,6 +1126,43 @@ app.get('/api/proof-kenny-status-by-txid/:txid', async (req, res) => {
   }
 });
 
+// Helper function to format Kenny's proof data properly
+function formatKennyProof(hexInput: any): string[] {
+  if (!hexInput) {
+    return Array(14).fill('0'.repeat(64)); // 14 empty 32-byte chunks
+  }
+  
+  let hexString = '';
+  
+  if (Array.isArray(hexInput)) {
+    // Kenny returns individual hex chars like ["c","0","6","d"]
+    hexString = hexInput.join('');
+  } else if (typeof hexInput === 'string') {
+    // Remove 0x prefix if present
+    hexString = hexInput.startsWith('0x') ? hexInput.slice(2) : hexInput;
+  } else {
+    console.warn('⚠️ [KENNY] Unknown proof format:', typeof hexInput);
+    return Array(14).fill('0'.repeat(64));
+  }
+  
+  // Split into 32-byte chunks (64 hex characters each)
+  const chunks: string[] = [];
+  for (let i = 0; i < hexString.length; i += 64) {
+    const chunk = hexString.slice(i, i + 64);
+    if (chunk.length === 64) {
+      chunks.push(chunk);
+    }
+  }
+  
+  // Ensure exactly 14 chunks
+  while (chunks.length < 14) {
+    chunks.push('0'.repeat(64));
+  }
+  
+  console.log(`✅ [KENNY] Converted proof: ${hexString.length} chars → ${chunks.length} chunks`);
+  return chunks.slice(0, 14);
+}
+
 // Separate function to handle the actual Kenny processing
 async function processKennyRequest(txid: string): Promise<any> {
   let blockHash = '';
@@ -1213,17 +1250,25 @@ async function processKennyRequest(txid: string): Promise<any> {
   
   console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
   
-  // Convert Kenny's proof format to match your existing format
+// ADD THIS DEBUG LOG HERE:
+console.log("🔍 [KENNY] Raw Kenny output:", {
+  witnessMerkleProofType: typeof proof.witnessMerkleProof,
+  witnessMerkleProofSample: proof.witnessMerkleProof?.slice?.(0, 50),
+  coinbaseMerkleProofType: typeof proof.coinbaseMerkleProof,
+  coinbaseMerkleProofSample: proof.coinbaseMerkleProof?.slice?.(0, 50)
+});
+
+// Convert Kenny's proof format to match your existing format
 const formattedProof = {
   segwit: true,
   height: proof.blockHeight,
   header: proof.blockHeader,
   txIndex: proof.txIndex,
-  treeDepth: proof.merkleProofDepth,
-  wproof: proof.witnessMerkleProof ? proof.witnessMerkleProof.split('') : [], // Convert string to array if needed
-  computedWtxidRoot: proof.witnessReservedValue, // or derive from other fields
+  treeDepth: proof.merkleProofDepth || 12,
+  wproof: formatKennyProof(proof.witnessMerkleProof),
+  computedWtxidRoot: proof.witnessReservedValue || '0'.repeat(64),
   ctxHex: proof.coinbaseTransaction,
-  cproof: proof.coinbaseMerkleProof ? proof.coinbaseMerkleProof.split('') : [] // Convert string to array if needed
+  cproof: formatKennyProof(proof.coinbaseMerkleProof)
 };
   
   console.log("🎉 [KENNY] Returning formatted proof");
