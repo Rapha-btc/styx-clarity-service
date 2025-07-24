@@ -1126,6 +1126,33 @@ app.get('/api/proof-kenny-status-by-txid/:txid', async (req, res) => {
   }
 });
 
+// Helper function to split Kenny's hex strings into 32-byte chunks
+function splitIntoChunks(hexString: string): string[] {
+  if (!hexString || typeof hexString !== 'string') {
+    return Array(14).fill('0'.repeat(64)); // 14 empty 32-byte chunks
+  }
+  
+  // Remove 0x prefix if present
+  const cleanHex = hexString.startsWith('0x') ? hexString.slice(2) : hexString;
+  
+  // Split into 64-character chunks (32 bytes each)
+  const chunks: string[] = [];
+  for (let i = 0; i < cleanHex.length; i += 64) {
+    const chunk = cleanHex.slice(i, i + 64);
+    if (chunk.length === 64) {
+      chunks.push(chunk);
+    }
+  }
+  
+  // Ensure exactly 14 chunks (pad if needed)
+  while (chunks.length < 14) {
+    chunks.push('0'.repeat(64));
+  }
+  
+  console.log(`🔧 [KENNY-FIX] Split ${cleanHex.length} chars into ${chunks.length} chunks`);
+  return chunks.slice(0, 14);
+}
+
 // Separate function to handle the actual Kenny processing
 async function processKennyRequest(txid: string): Promise<any> {
   let blockHash = '';
@@ -1213,22 +1240,94 @@ async function processKennyRequest(txid: string): Promise<any> {
   
   console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
   
-  // Convert Kenny's proof format to match your existing format
+    // 🔍 ADD THIS DEBUGGING:
+    console.log("🔍 [KENNY-DEBUG] Raw proof structure:", {
+      witnessMerkleProofType: typeof proof.witnessMerkleProof,
+      witnessMerkleProofLength: proof.witnessMerkleProof?.length,
+      witnessMerkleProofSample: proof.witnessMerkleProof?.slice?.(0, 100),
+      coinbaseMerkleProofType: typeof proof.coinbaseMerkleProof,
+      coinbaseMerkleProofLength: proof.coinbaseMerkleProof?.length,
+      coinbaseMerkleProofSample: proof.coinbaseMerkleProof?.slice?.(0, 100),
+      allKeys: Object.keys(proof)
+    });
+
+    if (Array.isArray(proof.witnessMerkleProof)) {
+      console.log("🚨 [KENNY-DEBUG] witnessMerkleProof is already an array!");
+      console.log("🚨 [KENNY-DEBUG] First 20 elements:", proof.witnessMerkleProof.slice(0, 20));
+    }
+
+// Convert Kenny's proof format to match your existing format
 const formattedProof = {
   segwit: true,
   height: proof.blockHeight,
   header: proof.blockHeader,
   txIndex: proof.txIndex,
   treeDepth: proof.merkleProofDepth,
-  wproof: proof.witnessMerkleProof ? proof.witnessMerkleProof : [], // Convert string to array if needed
-  computedWtxidRoot: proof.witnessReservedValue, // or derive from other fields
+  wproof: splitIntoChunks(proof.witnessMerkleProof), // ✅ CORRECT FORMAT
+  computedWtxidRoot: proof.witnessReservedValue,
   ctxHex: proof.coinbaseTransaction,
-  cproof: proof.coinbaseMerkleProof ? proof.coinbaseMerkleProof : [] // Convert string to array if needed
+  cproof: splitIntoChunks(proof.coinbaseMerkleProof) // ✅ CORRECT FORMAT
 };
+
+// 🔍 DEBUG: Show the fixed format
+console.log("🔍 [KENNY-DEBUG] Final formatted proof structure:", {
+  wproofType: typeof formattedProof.wproof,
+  wproofLength: formattedProof.wproof?.length,
+  wproofFirstElements: formattedProof.wproof?.slice?.(0, 3), // Show first 3 chunks instead of 20 chars
+  cproofType: typeof formattedProof.cproof,
+  cproofLength: formattedProof.cproof?.length,
+  cproofFirstElements: formattedProof.cproof?.slice?.(0, 3) // Show first 3 chunks instead of 20 chars
+});
+
   
   console.log("🎉 [KENNY] Returning formatted proof");
   return formattedProof;
 }
+
+// Add a cache clearing endpoint for testing
+app.delete('/api/proof-kenny-cache/:txid', async (req, res) => {
+  try {
+    const { txid } = req.params;
+    
+    // Clear from cache
+    kennyProofCache.delete(txid);
+    
+    // Clear from ongoing requests
+    ongoingKennyRequests.delete(txid);
+    
+    console.log(`🗑️ [CACHE] Cleared cache for txid: ${txid}`);
+    
+    res.json({
+      message: `Cache cleared for txid: ${txid}`,
+      txid
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// Or clear all cache
+app.delete('/api/proof-kenny-cache-all', async (req, res) => {
+  try {
+    kennyProofCache.clear();
+    ongoingKennyRequests.clear();
+    kennyJobs.clear();
+    
+    console.log(`🗑️ [CACHE] Cleared all Kenny caches`);
+    
+    res.json({
+      message: "All Kenny caches cleared"
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
 
 // Start the server
 const PORT = process.env.PORT || 3000;
