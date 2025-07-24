@@ -1220,10 +1220,10 @@ const formattedProof = {
   header: proof.blockHeader,
   txIndex: proof.txIndex,
   treeDepth: proof.merkleProofDepth,
-  wproof: proof.witnessMerkleProof ? proof.witnessMerkleProof.split('') : [], // Convert string to array if needed
+  wproof: proof.witnessMerkleProof ? proof.witnessMerkleProof : [], // Convert string to array if needed
   computedWtxidRoot: proof.witnessReservedValue, // or derive from other fields
   ctxHex: proof.coinbaseTransaction,
-  cproof: proof.coinbaseMerkleProof ? proof.coinbaseMerkleProof.split('') : [] // Convert string to array if needed
+  cproof: proof.coinbaseMerkleProof ? proof.coinbaseMerkleProof : [] // Convert string to array if needed
 };
   
   console.log("🎉 [KENNY] Returning formatted proof");
