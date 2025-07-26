@@ -1153,7 +1153,199 @@ function splitIntoChunks(hexString: string): string[] {
   return chunks.slice(0, 14);
 }
 
-// Separate function to handle the actual Kenny processing
+function extractWitnessCommitment(coinbaseTxHex: string): string | null {
+  try {
+    console.log("🔍 [WITNESS-EXTRACT] Extracting witness commitment from coinbase...");
+    console.log("🔍 [WITNESS-EXTRACT] Coinbase hex length:", coinbaseTxHex.length);
+    
+    // Look for the witness commitment pattern in the coinbase transaction
+    // Witness commitment is in an OP_RETURN output with prefix aa21a9ed
+    const commitmentPattern = /aa21a9ed([0-9a-fA-F]{64})/;
+    const match = coinbaseTxHex.match(commitmentPattern);
+    
+    if (match && match[1]) {
+      const witnessCommitment = match[1];
+      console.log("✅ [WITNESS-EXTRACT] Found witness commitment:", witnessCommitment);
+      return witnessCommitment;
+    }
+    
+    console.log("❌ [WITNESS-EXTRACT] No witness commitment found in coinbase");
+    return null;
+  } catch (error) {
+    console.error("❌ [WITNESS-EXTRACT] Error extracting witness commitment:", error);
+    return null;
+  }
+}
+
+// Add these type definitions at the top of your server.ts file
+
+// Type for parsed transaction structure
+interface ParsedTransaction {
+  version: string;
+  ins: Array<{
+    outpoint: {
+      hash: string;
+      index: string;
+    };
+    scriptSig: string;
+    sequence: string;
+  }>;
+  outs: Array<{
+    value: string;
+    scriptPubKey: string;
+  }>;
+  locktime: string;
+}
+
+// Type for parsed transaction data result
+interface ParsedTransactionData {
+  wtx: ParsedTransaction;
+  witnessData: string;
+}
+
+// Type for Kenny's proof result - make it flexible
+interface KennyProofResult {
+  blockHeight: number;
+  transaction: string;
+  blockHeader: string;
+  txIndex: number;
+  merkleProofDepth: number;
+  witnessMerkleProof: string;
+  witnessReservedValue: string;
+  coinbaseTransaction: string;
+  coinbaseMerkleProof: string;
+  [key: string]: any; // Allow additional properties for flexible access
+}
+
+// Fixed parseKennyTransactionData function with proper typing
+function parseKennyTransactionData(combinedTxHex: string): ParsedTransactionData {
+  console.log("🔧 [TX-PARSER] Parsing Kenny's combined transaction data");
+  console.log("🔧 [TX-PARSER] Input length:", combinedTxHex.length);
+  
+  // Remove 0x prefix if present
+  const cleanHex = combinedTxHex.startsWith('0x') ? combinedTxHex.slice(2) : combinedTxHex;
+  
+  let offset = 0;
+  
+  // Parse version (4 bytes)
+  const version = cleanHex.slice(offset, offset + 8);
+  offset += 8;
+  
+  // Check for SegWit marker and flag
+  const marker = cleanHex.slice(offset, offset + 2);
+  const flag = cleanHex.slice(offset + 2, offset + 4);
+  const isSegwit = marker === "00" && flag === "01";
+  
+  if (isSegwit) {
+    console.log("✅ [TX-PARSER] Detected SegWit transaction");
+    offset += 4; // Skip marker and flag
+  }
+  
+  // Parse input count
+  const inputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
+  offset += 2;
+  console.log("📋 [TX-PARSER] Input count:", inputCount);
+  
+  // Parse inputs
+  const inputs: ParsedTransaction['ins'] = [];
+  for (let i = 0; i < inputCount; i++) {
+    // Previous output hash (32 bytes = 64 hex chars)
+    const prevHash = cleanHex.slice(offset, offset + 64);
+    offset += 64;
+    
+    // Previous output index (4 bytes = 8 hex chars)
+    const prevIndex = cleanHex.slice(offset, offset + 8);
+    offset += 8;
+    
+    // Script length (1 byte = 2 hex chars, assuming < 253)
+    const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
+    offset += 2;
+    
+    // Script data
+    const script = cleanHex.slice(offset, offset + (scriptLen * 2));
+    offset += (scriptLen * 2);
+    
+    // Sequence (4 bytes = 8 hex chars)
+    const sequence = cleanHex.slice(offset, offset + 8);
+    offset += 8;
+    
+    inputs.push({
+      outpoint: {
+        hash: `0x${prevHash}`,
+        index: `0x${prevIndex}`
+      },
+      scriptSig: `0x${script}`,
+      sequence: `0x${sequence}`
+    });
+  }
+  
+  // Parse output count
+  const outputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
+  offset += 2;
+  console.log("📋 [TX-PARSER] Output count:", outputCount);
+  
+  // Parse outputs
+  const outputs: ParsedTransaction['outs'] = [];
+  for (let i = 0; i < outputCount; i++) {
+    // Value (8 bytes = 16 hex chars)
+    const value = cleanHex.slice(offset, offset + 16);
+    offset += 16;
+    
+    // Script length
+    const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
+    offset += 2;
+    
+    // Script data
+    const script = cleanHex.slice(offset, offset + (scriptLen * 2));
+    offset += (scriptLen * 2);
+    
+    outputs.push({
+      value: `0x${value}`,
+      scriptPubKey: `0x${script}`
+    });
+  }
+  
+  // Extract witness data (if SegWit)
+  let witnessData = "0x";
+  let locktime = "0x00000000";
+  
+  if (isSegwit && offset < cleanHex.length - 8) {
+    // Everything between outputs and locktime is witness data
+    const witnessStart = offset;
+    const witnessEnd = cleanHex.length - 8; // Locktime is last 8 chars
+    
+    witnessData = `0x${cleanHex.slice(witnessStart, witnessEnd)}`;
+    locktime = `0x${cleanHex.slice(-8)}`;
+    
+    console.log("✅ [TX-PARSER] Extracted witness data length:", witnessData.length - 2);
+  } else {
+    // Non-SegWit transaction
+    locktime = `0x${cleanHex.slice(-8)}`;
+  }
+  
+  const parsedTx: ParsedTransaction = {
+    version: `0x${version}`,
+    ins: inputs,
+    outs: outputs,
+    locktime: locktime
+  };
+  
+  console.log("✅ [TX-PARSER] Successfully parsed transaction");
+  console.log("📋 [TX-PARSER] Structure:", {
+    version: parsedTx.version,
+    inputCount: parsedTx.ins.length,
+    outputCount: parsedTx.outs.length,
+    locktime: parsedTx.locktime,
+    witnessDataLength: witnessData.length - 2
+  });
+  
+  return {
+    wtx: parsedTx,
+    witnessData: witnessData
+  };
+}
+
+// Fixed processKennyRequest function with proper typing
 async function processKennyRequest(txid: string): Promise<any> {
   let blockHash = '';
   
@@ -1194,7 +1386,7 @@ async function processKennyRequest(txid: string): Promise<any> {
   }
 
   // Get block height from block hash
-  let blockHeight;
+  let blockHeight: number;
   try {
     const blockRequestBody = JSON.stringify({
       jsonrpc: '1.0',
@@ -1234,53 +1426,145 @@ async function processKennyRequest(txid: string): Promise<any> {
     password: process.env.RPC_PASS || ''
   };
   
-  // Use Kenny's bitcoinTxProof function
+  // Use Kenny's bitcoinTxProof function - cast to our flexible type
   console.log(`🔄 [KENNY] Calling Kenny's bitcoinTxProof...`);
-  const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig);
+  const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig) as KennyProofResult;
   
   console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
   
-    // 🔍 ADD THIS DEBUGGING:
-    console.log("🔍 [KENNY-DEBUG] Raw proof structure:", {
-      witnessMerkleProofType: typeof proof.witnessMerkleProof,
-      witnessMerkleProofLength: proof.witnessMerkleProof?.length,
-      witnessMerkleProofSample: proof.witnessMerkleProof?.slice?.(0, 100),
-      coinbaseMerkleProofType: typeof proof.coinbaseMerkleProof,
-      coinbaseMerkleProofLength: proof.coinbaseMerkleProof?.length,
-      coinbaseMerkleProofSample: proof.coinbaseMerkleProof?.slice?.(0, 100),
-      allKeys: Object.keys(proof)
-    });
-
-    if (Array.isArray(proof.witnessMerkleProof)) {
-      console.log("🚨 [KENNY-DEBUG] witnessMerkleProof is already an array!");
-      console.log("🚨 [KENNY-DEBUG] First 20 elements:", proof.witnessMerkleProof.slice(0, 20));
-    }
-
-// Convert Kenny's proof format to match your existing format
-const formattedProof = {
-  segwit: true,
-  height: proof.blockHeight,
-  header: proof.blockHeader,
-  txIndex: proof.txIndex,
-  treeDepth: proof.merkleProofDepth,
-  wproof: splitIntoChunks(proof.witnessMerkleProof), // ✅ CORRECT FORMAT
-  computedWtxidRoot: proof.witnessReservedValue,
-  ctxHex: proof.coinbaseTransaction,
-  cproof: splitIntoChunks(proof.coinbaseMerkleProof) // ✅ CORRECT FORMAT
-};
-
-// 🔍 DEBUG: Show the fixed format
-console.log("🔍 [KENNY-DEBUG] Final formatted proof structure:", {
-  wproofType: typeof formattedProof.wproof,
-  wproofLength: formattedProof.wproof?.length,
-  wproofFirstElements: formattedProof.wproof?.slice?.(0, 3), // Show first 3 chunks instead of 20 chars
-  cproofType: typeof formattedProof.cproof,
-  cproofLength: formattedProof.cproof?.length,
-  cproofFirstElements: formattedProof.cproof?.slice?.(0, 3) // Show first 3 chunks instead of 20 chars
-});
-
+  // 🔍 COMPLETE ANALYSIS OF KENNY'S OUTPUT
+  console.log("================================================================================");
+  console.log("🔍 [KENNY-COMPLETE-ANALYSIS] FULL KENNY OUTPUT ANALYSIS");
+  console.log("================================================================================");
   
-  console.log("🎉 [KENNY] Returning formatted proof");
+  // 1. Show ALL keys Kenny returns
+  console.log("📋 [KENNY-ANALYSIS] All keys returned by Kenny:");
+  Object.keys(proof).forEach(key => {
+    const value = (proof as any)[key]; // Use any for dynamic property access
+    console.log(`   - ${key}: ${typeof value} (length: ${value?.length || 'N/A'})`);
+  });
+  
+  // 2. Detailed analysis of each field
+  console.log("\n📊 [KENNY-ANALYSIS] Detailed field analysis:");
+  Object.keys(proof).forEach(key => {
+    const value = (proof as any)[key]; // Use any for dynamic property access
+    const analysis = {
+      key,
+      type: typeof value,
+      length: value?.length,
+      isString: typeof value === 'string',
+      isArray: Array.isArray(value),
+      isEmpty: !value || value === '',
+      isAllZeros: value === '0000000000000000000000000000000000000000000000000000000000000000',
+      preview: typeof value === 'string' ? value.slice(0, 64) + (value.length > 64 ? '...' : '') : value
+    };
+    console.log(`   ${key}:`, JSON.stringify(analysis, null, 4));
+  });
+  
+  // 3. WITNESS-SPECIFIC ANALYSIS
+  console.log("\n🎯 [KENNY-ANALYSIS] WITNESS MERKLE ROOT INVESTIGATION:");
+  const witnessFields = [
+    'witnessReservedValue', 
+    'witnessMerkleRoot', 
+    'witnessCommitment', 
+    'wtxidRoot', 
+    'computedWtxidRoot',
+    'witnessRoot',
+    'merkleRoot'
+  ];
+  
+  witnessFields.forEach(field => {
+    const fieldValue = (proof as any)[field]; // Use any for dynamic property access
+    if (fieldValue !== undefined) {
+      const isAllZeros = fieldValue === '0000000000000000000000000000000000000000000000000000000000000000';
+      const isEmpty = !fieldValue || fieldValue === '';
+      console.log(`   ✅ FOUND ${field}:`);
+      console.log(`      Value: ${fieldValue}`);
+      console.log(`      Type: ${typeof fieldValue}`);
+      console.log(`      Length: ${fieldValue?.length}`);
+      console.log(`      Is all zeros: ${isAllZeros}`);
+      console.log(`      Is empty: ${isEmpty}`);
+      console.log(`      VIABLE FOR WITNESS ROOT: ${!isAllZeros && !isEmpty ? 'YES ✅' : 'NO ❌'}`);
+    } else {
+      console.log(`   ❌ ${field}: NOT FOUND`);
+    }
+  });
+  
+  // 4. DETERMINE THE CORRECT WITNESS ROOT
+  console.log("\n🎯 [KENNY-ANALYSIS] WITNESS ROOT SELECTION:");
+  let selectedWitnessRoot: string | null = null;
+  let selectedField: string | null = null;
+  
+  // Priority order for witness root selection
+  const priorityOrder = ['witnessMerkleRoot', 'computedWtxidRoot', 'wtxidRoot', 'witnessRoot', 'witnessCommitment', 'witnessReservedValue'];
+  
+  for (const field of priorityOrder) {
+    const fieldValue = (proof as any)[field]; // Use any for dynamic property access
+    if (fieldValue && fieldValue !== '0000000000000000000000000000000000000000000000000000000000000000' && fieldValue !== '') {
+      selectedWitnessRoot = fieldValue;
+      selectedField = field;
+      break;
+    }
+  }
+  
+  console.log(`   Selected witness root field: ${selectedField || 'NONE FOUND'}`);
+  console.log(`   Selected witness root value: ${selectedWitnessRoot || 'ALL ZEROS/EMPTY'}`);
+  
+  if (!selectedWitnessRoot) {
+    console.log("   ⚠️  WARNING: No valid witness root found! Using witnessReservedValue as fallback");
+    selectedWitnessRoot = proof.witnessReservedValue || '0000000000000000000000000000000000000000000000000000000000000000';
+    selectedField = 'witnessReservedValue (fallback)';
+  }
+  
+  // 5. FINAL PROOF CONSTRUCTION WITH WITNESS ROOT EXTRACTION
+  console.log("\n🏗️  [KENNY-ANALYSIS] CONSTRUCTING FINAL PROOF:");
+
+  // Try to extract witness commitment from coinbase transaction
+  let witnessRoot = selectedWitnessRoot;
+  if (!witnessRoot || witnessRoot === '0000000000000000000000000000000000000000000000000000000000000000') {
+    console.log("🔍 [KENNY-ANALYSIS] Attempting to extract witness commitment from coinbase...");
+    const extractedCommitment = extractWitnessCommitment(proof.coinbaseTransaction);
+    if (extractedCommitment) {
+      witnessRoot = extractedCommitment;
+      selectedField = 'coinbase witness commitment';
+      console.log("✅ [KENNY-ANALYSIS] Using extracted witness commitment as witness root");
+    }
+  }
+
+  // 🔧 PARSE KENNY'S COMBINED TRANSACTION DATA
+  console.log("🔧 [KENNY-ANALYSIS] Parsing transaction data...");
+  const { wtx, witnessData } = parseKennyTransactionData(proof.transaction);
+
+  const formattedProof = {
+    segwit: true,
+    height: proof.blockHeight,
+    header: proof.blockHeader,
+    txIndex: proof.txIndex,
+    treeDepth: proof.merkleProofDepth,
+    wproof: splitIntoChunks(proof.witnessMerkleProof),
+    computedWtxidRoot: witnessRoot || '0000000000000000000000000000000000000000000000000000000000000000',
+    ctxHex: proof.coinbaseTransaction,
+    cproof: splitIntoChunks(proof.coinbaseMerkleProof),
+    
+    // 🔧 ADD THE PARSED TRANSACTION STRUCTURE AND WITNESS DATA
+    wtx: wtx,
+    witnessData: witnessData
+  };
+
+  console.log(`   Final computedWtxidRoot: ${formattedProof.computedWtxidRoot}`);
+  console.log(`   Source field: ${selectedField}`);
+  console.log(`   Is all zeros: ${formattedProof.computedWtxidRoot === '0000000000000000000000000000000000000000000000000000000000000000'}`);
+
+  if (formattedProof.computedWtxidRoot === '0000000000000000000000000000000000000000000000000000000000000000') {
+    console.log("⚠️  [KENNY-ANALYSIS] WARNING: Still using all-zeros witness root - Clarity verification may fail");
+  } else {
+    console.log("✅ [KENNY-ANALYSIS] SUCCESS: Found valid witness root - Clarity verification should pass");
+  }
+  
+  console.log("================================================================================");
+  console.log("🎉 [KENNY-ANALYSIS] ANALYSIS COMPLETE - RETURNING PROOF");
+  console.log("================================================================================");
+  
   return formattedProof;
 }
 
