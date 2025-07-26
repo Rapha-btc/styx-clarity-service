@@ -1218,19 +1218,21 @@ interface KennyProofResult {
 }
 
 // Add this helper function at the top of your file
-function reverseHexBytes(hex: string, targetLength: number = 16): string {
-  const reversed = hex.match(/.{2}/g)?.reverse().join('') || hex;
-  return reversed.padStart(targetLength, '0');
-}
-
-// Helper for 4-byte fields (version, index, sequence, locktime)
 function reverse4Bytes(hex: string): string {
-  return reverseHexBytes(hex, 8); // 8 hex chars = 4 bytes
+  // Bitcoin uses 4-byte fields - ensure exactly 4 bytes output
+  const clean = hex.replace(/^0x/, '');
+  // Take last 8 hex chars (4 bytes) and reverse byte order
+  const last4Bytes = clean.slice(-8).padStart(8, '0');
+  const bytes = last4Bytes.match(/.{2}/g) || [];
+  return bytes.reverse().join('');
 }
 
-// Helper for 8-byte fields (values)
 function reverse8Bytes(hex: string): string {
-  return reverseHexBytes(hex, 16); // 16 hex chars = 8 bytes
+  // Bitcoin values are 8 bytes - keep full precision
+  const clean = hex.replace(/^0x/, '');
+  const padded = clean.padStart(16, '0');
+  const bytes = padded.match(/.{2}/g) || [];
+  return bytes.reverse().join('');
 }
 
 // Enhanced parseKennyTransactionData function with FIXED byte order
@@ -1299,10 +1301,10 @@ function parseKennyTransactionData(combinedTxHex: string) {
     inputs.push({
       outpoint: {
         hash: `0x${prevHash}`,
-        index: `0x${reverse4Bytes(prevIndex)}`  // ✅ FIXED - 4 bytes
+        index: `0x${reverse4Bytes(prevIndex).padEnd(8, '0')}`
       },
       scriptSig: `0x${script}`,
-      sequence: `0x${reverse4Bytes(sequence)}`  // ✅ FIXED - 4 bytes
+      sequence: `0x${reverse4Bytes(sequence).padEnd(8, '0')}`
     });
     
     console.log(`✅ [TX-PARSER] Input ${i + 1} parsed:`, inputs[i]);
@@ -1366,19 +1368,19 @@ function parseKennyTransactionData(combinedTxHex: string) {
     
     // FIXED: reverse locktime bytes, trim to 4 bytes
     const locktimeRaw = cleanHex.slice(-8);
-    locktime = `0x${reverse4Bytes(locktimeRaw)}`;
+    locktime = `0x${reverse4Bytes(locktimeRaw).padEnd(8, '0')}`;
     
     console.log(`✅ [TX-PARSER] Witness data: ${witnessData.slice(0, 50)}... (length: ${witnessData.length - 2})`);
     console.log(`✅ [TX-PARSER] Locktime: ${locktimeRaw} -> ${locktime}`);
   } else {
     // FIXED: reverse locktime bytes, trim to 4 bytes
     const locktimeRaw = cleanHex.slice(-8);
-    locktime = `0x${reverse4Bytes(locktimeRaw)}`;
+    locktime = `0x${reverse4Bytes(locktimeRaw).padEnd(8, '0')}`;
     console.log(`✅ [TX-PARSER] Locktime (non-SegWit): ${locktimeRaw} -> ${locktime}`);
   }
   
   const parsedTx = {
-    version: `0x${reverse4Bytes(version)}`,  // ✅ FIXED - 4 bytes
+    version: `0x${reverse4Bytes(version).padEnd(8, '0')}`,
     ins: inputs,
     outs: outputs,
     locktime: locktime  // ✅ FIXED - 4 bytes
