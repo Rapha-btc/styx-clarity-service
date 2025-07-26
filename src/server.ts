@@ -1217,92 +1217,130 @@ interface KennyProofResult {
   [key: string]: any; // Allow additional properties for flexible access
 }
 
-// Fixed parseKennyTransactionData function with proper typing
-function parseKennyTransactionData(combinedTxHex: string): ParsedTransactionData {
+// Add this helper function at the top of your file
+function reverseHexBytes(hex: string): string {
+  return hex.match(/.{2}/g)?.reverse().join('').padStart(16, '0') || hex;
+}
+
+// Enhanced parseKennyTransactionData function with FIXED byte order
+function parseKennyTransactionData(combinedTxHex: string) {
   console.log("🔧 [TX-PARSER] Parsing Kenny's combined transaction data");
   console.log("🔧 [TX-PARSER] Input length:", combinedTxHex.length);
+  console.log("🔧 [TX-PARSER] Raw input:", combinedTxHex);
   
   // Remove 0x prefix if present
   const cleanHex = combinedTxHex.startsWith('0x') ? combinedTxHex.slice(2) : combinedTxHex;
+  console.log("🔧 [TX-PARSER] Clean hex length:", cleanHex.length);
   
   let offset = 0;
   
-  // Parse version (4 bytes)
+  // Parse version (4 bytes) - FIXED: reverse byte order
   const version = cleanHex.slice(offset, offset + 8);
   offset += 8;
+  console.log(`✅ [TX-PARSER] Version: 0x${reverseHexBytes(version)} (offset: ${offset})`);
   
   // Check for SegWit marker and flag
   const marker = cleanHex.slice(offset, offset + 2);
   const flag = cleanHex.slice(offset + 2, offset + 4);
   const isSegwit = marker === "00" && flag === "01";
+  console.log(`✅ [TX-PARSER] Marker: ${marker}, Flag: ${flag}, IsSegWit: ${isSegwit}`);
   
   if (isSegwit) {
-    console.log("✅ [TX-PARSER] Detected SegWit transaction");
     offset += 4; // Skip marker and flag
+    console.log(`✅ [TX-PARSER] SegWit detected, offset now: ${offset}`);
   }
   
   // Parse input count
   const inputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
   offset += 2;
-  console.log("📋 [TX-PARSER] Input count:", inputCount);
+  console.log(`✅ [TX-PARSER] Input count: ${inputCount} (offset: ${offset})`);
   
   // Parse inputs
-  const inputs: ParsedTransaction['ins'] = [];
+  const inputs = [];
   for (let i = 0; i < inputCount; i++) {
-    // Previous output hash (32 bytes = 64 hex chars)
+    console.log(`🔧 [TX-PARSER] Parsing input ${i + 1}/${inputCount}`);
+    
+    // Previous output hash (32 bytes = 64 hex chars) - keep as-is (already correct order)
     const prevHash = cleanHex.slice(offset, offset + 64);
     offset += 64;
+    console.log(`   Hash: ${prevHash} (offset: ${offset})`);
     
-    // Previous output index (4 bytes = 8 hex chars)
+    // Previous output index (4 bytes = 8 hex chars) - FIXED: reverse byte order
     const prevIndex = cleanHex.slice(offset, offset + 8);
     offset += 8;
+    console.log(`   Index: ${prevIndex} -> ${reverseHexBytes(prevIndex)} (offset: ${offset})`);
     
     // Script length (1 byte = 2 hex chars, assuming < 253)
     const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
     offset += 2;
+    console.log(`   Script length: ${scriptLen} (offset: ${offset})`);
     
     // Script data
     const script = cleanHex.slice(offset, offset + (scriptLen * 2));
     offset += (scriptLen * 2);
+    console.log(`   Script: ${script} (offset: ${offset})`);
     
-    // Sequence (4 bytes = 8 hex chars)
+    // Sequence (4 bytes = 8 hex chars) - FIXED: reverse byte order
     const sequence = cleanHex.slice(offset, offset + 8);
     offset += 8;
+    console.log(`   Sequence: ${sequence} -> ${reverseHexBytes(sequence)} (offset: ${offset})`);
     
     inputs.push({
       outpoint: {
         hash: `0x${prevHash}`,
-        index: `0x${prevIndex}`
+        index: `0x${reverseHexBytes(prevIndex)}`  // ✅ FIXED
       },
       scriptSig: `0x${script}`,
-      sequence: `0x${sequence}`
+      sequence: `0x${reverseHexBytes(sequence)}`  // ✅ FIXED
     });
+    
+    console.log(`✅ [TX-PARSER] Input ${i + 1} parsed:`, inputs[i]);
   }
   
   // Parse output count
   const outputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
   offset += 2;
-  console.log("📋 [TX-PARSER] Output count:", outputCount);
+  console.log(`✅ [TX-PARSER] Output count: ${outputCount} (offset: ${offset})`);
   
   // Parse outputs
-  const outputs: ParsedTransaction['outs'] = [];
+  const outputs = [];
   for (let i = 0; i < outputCount; i++) {
-    // Value (8 bytes = 16 hex chars)
+    console.log(`🔧 [TX-PARSER] Parsing output ${i + 1}/${outputCount}`);
+    
+    // Value (8 bytes = 16 hex chars) - FIXED: reverse byte order
     const value = cleanHex.slice(offset, offset + 16);
     offset += 16;
+    console.log(`   Value: ${value} -> ${reverseHexBytes(value)} (length: ${value.length}) (offset: ${offset})`);
+    
+    // CRITICAL CHECK: Ensure value is exactly 16 chars
+    if (value.length !== 16) {
+      console.error(`❌ [TX-PARSER] ERROR: Value length is ${value.length}, should be 16!`);
+      console.error(`❌ [TX-PARSER] Raw value: "${value}"`);
+      console.error(`❌ [TX-PARSER] At offset: ${offset - 16} to ${offset}`);
+    }
     
     // Script length
     const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
     offset += 2;
+    console.log(`   Script length: ${scriptLen} (offset: ${offset})`);
     
     // Script data
     const script = cleanHex.slice(offset, offset + (scriptLen * 2));
     offset += (scriptLen * 2);
+    console.log(`   Script: ${script} (length: ${script.length}) (offset: ${offset})`);
     
-    outputs.push({
-      value: `0x${value}`,
+    const formattedOutput = {
+      value: `0x${reverseHexBytes(value)}`,  // ✅ FIXED: Now reverses bytes!
       scriptPubKey: `0x${script}`
-    });
+    };
+    
+    outputs.push(formattedOutput);
+    console.log(`✅ [TX-PARSER] Output ${i + 1} parsed:`, formattedOutput);
+    
+    // VALIDATE OUTPUT FORMAT
+    if (formattedOutput.value.length !== 18) { // 0x + 16 chars
+      console.error(`❌ [TX-PARSER] ERROR: Formatted value length is ${formattedOutput.value.length}, should be 18!`);
+    }
   }
   
   // Extract witness data (if SegWit)
@@ -1310,41 +1348,51 @@ function parseKennyTransactionData(combinedTxHex: string): ParsedTransactionData
   let locktime = "0x00000000";
   
   if (isSegwit && offset < cleanHex.length - 8) {
-    // Everything between outputs and locktime is witness data
     const witnessStart = offset;
-    const witnessEnd = cleanHex.length - 8; // Locktime is last 8 chars
+    const witnessEnd = cleanHex.length - 8;
     
     witnessData = `0x${cleanHex.slice(witnessStart, witnessEnd)}`;
-    locktime = `0x${cleanHex.slice(-8)}`;
     
-    console.log("✅ [TX-PARSER] Extracted witness data length:", witnessData.length - 2);
+    // FIXED: reverse locktime bytes
+    const locktimeRaw = cleanHex.slice(-8);
+    locktime = `0x${reverseHexBytes(locktimeRaw)}`;
+    
+    console.log(`✅ [TX-PARSER] Witness data: ${witnessData.slice(0, 50)}... (length: ${witnessData.length - 2})`);
+    console.log(`✅ [TX-PARSER] Locktime: ${locktimeRaw} -> ${locktime}`);
   } else {
-    // Non-SegWit transaction
-    locktime = `0x${cleanHex.slice(-8)}`;
+    // FIXED: reverse locktime bytes
+    const locktimeRaw = cleanHex.slice(-8);
+    locktime = `0x${reverseHexBytes(locktimeRaw)}`;
+    console.log(`✅ [TX-PARSER] Locktime (non-SegWit): ${locktimeRaw} -> ${locktime}`);
   }
   
-  const parsedTx: ParsedTransaction = {
-    version: `0x${version}`,
+  const parsedTx = {
+    version: `0x${reverseHexBytes(version)}`,  // ✅ FIXED
     ins: inputs,
     outs: outputs,
-    locktime: locktime
+    locktime: locktime  // ✅ FIXED
   };
   
-  console.log("✅ [TX-PARSER] Successfully parsed transaction");
-  console.log("📋 [TX-PARSER] Structure:", {
-    version: parsedTx.version,
-    inputCount: parsedTx.ins.length,
-    outputCount: parsedTx.outs.length,
-    locktime: parsedTx.locktime,
-    witnessDataLength: witnessData.length - 2
+  console.log("🎯 [TX-PARSER] FINAL VALIDATION:");
+  console.log("   Version length:", parsedTx.version.length, "(should be 10)");
+  console.log("   Inputs count:", parsedTx.ins.length);
+  console.log("   Outputs count:", parsedTx.outs.length);
+  
+  // Validate each output
+  parsedTx.outs.forEach((out, i) => {
+    console.log(`   Output ${i}: value length = ${out.value.length} (should be 18), script length = ${out.scriptPubKey.length}`);
+    if (out.value.length !== 18) {
+      console.error(`❌ [FINAL-VALIDATION] Output ${i} value is malformed: ${out.value}`);
+    }
   });
+  
+  console.log("✅ [TX-PARSER] Parsing complete");
   
   return {
     wtx: parsedTx,
     witnessData: witnessData
   };
 }
-
 // Fixed processKennyRequest function with proper typing
 async function processKennyRequest(txid: string): Promise<any> {
   let blockHash = '';
