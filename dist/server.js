@@ -984,6 +984,9 @@ async function processKennyRequest(txid) {
     console.log(`✅ [KENNY] Final proof: height=${formattedProof.height}, txIndex=${formattedProof.txIndex}, treeDepth=${formattedProof.treeDepth}`);
     console.log(`✅ [KENNY] Witness root: ${formattedProof.computedWtxidRoot}`);
     console.log(`✅ [KENNY] Proof chunks: witness=${formattedProof.wproof.length}, coinbase=${formattedProof.cproof.length}`);
+    console.log("🔍 [KENNY-VERIFY] Starting Kenny proof verification...");
+    const isValid = await verifyKennyProofData(txid, formattedProof, blockHash);
+    console.log(`🔍 [KENNY-VERIFY] Kenny proof validation: ${isValid ? 'PASSED ✅' : 'FAILED ❌'}`);
     return formattedProof;
 }
 // SIMPLIFIED chunk splitting - no forced padding
@@ -1212,21 +1215,209 @@ function parseKennyTransactionData(combinedTxHex) {
         witnessData: witnessData
     };
 }
-// Add this helper function at the top of your file
-function reverse4Bytes(hex) {
-    // Bitcoin uses 4-byte fields - ensure exactly 4 bytes output
-    const clean = hex.replace(/^0x/, '');
-    // Take last 8 hex chars (4 bytes) and reverse byte order
-    const last4Bytes = clean.slice(-8).padStart(8, '0');
-    const bytes = last4Bytes.match(/.{2}/g) || [];
-    return bytes.reverse().join('');
+// 1. VERIFY TRANSACTION INDEX
+async function verifyTransactionIndex(txid, blockHash, expectedIndex) {
+    console.log(`🔍 [VERIFY-INDEX] Checking if ${txid} is at index ${expectedIndex}`);
+    try {
+        const blockRequest = JSON.stringify({
+            jsonrpc: '1.0',
+            id: 'bitcoin-rpc',
+            method: 'getblock',
+            params: [blockHash, 2]
+        });
+        const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+            },
+            body: blockRequest
+        });
+        const blockData = await response.json();
+        if (blockData.result && blockData.result.tx) {
+            const transactions = blockData.result.tx;
+            console.log(`📊 [VERIFY-INDEX] Block has ${transactions.length} transactions`);
+            const actualIndex = transactions.findIndex((tx) => tx.txid === txid);
+            if (actualIndex === -1) {
+                console.error(`❌ [VERIFY-INDEX] Transaction ${txid} NOT FOUND in block`);
+                return false;
+            }
+            if (actualIndex === expectedIndex) {
+                console.log(`✅ [VERIFY-INDEX] Transaction found at correct index ${actualIndex}`);
+                return true;
+            }
+            else {
+                console.error(`❌ [VERIFY-INDEX] Index mismatch! Expected: ${expectedIndex}, Actual: ${actualIndex}`);
+                return false;
+            }
+        }
+        else {
+            console.error(`❌ [VERIFY-INDEX] Could not get block data`);
+            return false;
+        }
+    }
+    catch (error) {
+        console.error(`❌ [VERIFY-INDEX] Error:`, error);
+        return false;
+    }
 }
-function reverse8Bytes(hex) {
-    // Bitcoin values are 8 bytes - keep full precision
-    const clean = hex.replace(/^0x/, '');
-    const padded = clean.padStart(16, '0');
-    const bytes = padded.match(/.{2}/g) || [];
-    return bytes.reverse().join('');
+// 2. VERIFY MERKLE PROOF PATH
+async function verifyMerkleProofPath(txid, blockHash, expectedIndex, kennyProof) {
+    console.log(`🔍 [VERIFY-PROOF] Verifying merkle proof path for index ${expectedIndex}`);
+    try {
+        const blockRequest = JSON.stringify({
+            jsonrpc: '1.0',
+            id: 'bitcoin-rpc',
+            method: 'getblock',
+            params: [blockHash, 1]
+        });
+        const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+            },
+            body: blockRequest
+        });
+        const blockData = await response.json();
+        if (blockData.result && blockData.result.tx) {
+            const txids = blockData.result.tx;
+            console.log(`📊 [VERIFY-PROOF] Block has ${txids.length} transactions`);
+            const merkleProof = calculateMerkleProof(txids, expectedIndex);
+            console.log(`🔍 [VERIFY-PROOF] Calculated proof (${merkleProof.length} elements):`);
+            merkleProof.forEach((hash, i) => {
+                console.log(`   ${i}: ${hash}`);
+            });
+            console.log(`🔍 [VERIFY-PROOF] Kenny's proof (${kennyProof.length} elements):`);
+            kennyProof.forEach((hash, i) => {
+                console.log(`   ${i}: ${hash}`);
+            });
+            if (merkleProof.length !== kennyProof.length) {
+                console.error(`❌ [VERIFY-PROOF] Length mismatch! Expected: ${merkleProof.length}, Kenny: ${kennyProof.length}`);
+                return false;
+            }
+            let matches = true;
+            for (let i = 0; i < merkleProof.length; i++) {
+                if (merkleProof[i] !== kennyProof[i]) {
+                    console.error(`❌ [VERIFY-PROOF] Hash ${i} mismatch!`);
+                    console.error(`   Expected: ${merkleProof[i]}`);
+                    console.error(`   Kenny:    ${kennyProof[i]}`);
+                    matches = false;
+                }
+            }
+            if (matches) {
+                console.log(`✅ [VERIFY-PROOF] Kenny's proof matches calculated proof!`);
+                return true;
+            }
+            else {
+                console.error(`❌ [VERIFY-PROOF] Kenny's proof does NOT match!`);
+                return false;
+            }
+        }
+        return false;
+    }
+    catch (error) {
+        console.error(`❌ [VERIFY-PROOF] Error:`, error);
+        return false;
+    }
+}
+// 3. SIMPLE MERKLE PROOF CALCULATOR
+function calculateMerkleProof(txids, targetIndex) {
+    console.log(`🔧 [MERKLE-CALC] Calculating proof for index ${targetIndex} in ${txids.length} transactions`);
+    const proof = [];
+    let currentLevel = [...txids];
+    let currentIndex = targetIndex;
+    while (currentLevel.length > 1) {
+        const nextLevel = [];
+        const isEven = currentIndex % 2 === 0;
+        const siblingIndex = isEven ? currentIndex + 1 : currentIndex - 1;
+        if (siblingIndex < currentLevel.length) {
+            proof.push(currentLevel[siblingIndex]);
+            console.log(`   Level ${currentLevel.length}: sibling at ${siblingIndex} = ${currentLevel[siblingIndex]}`);
+        }
+        else {
+            proof.push(currentLevel[currentIndex]);
+            console.log(`   Level ${currentLevel.length}: duplicating ${currentLevel[currentIndex]}`);
+        }
+        for (let i = 0; i < currentLevel.length; i += 2) {
+            const left = currentLevel[i];
+            const right = i + 1 < currentLevel.length ? currentLevel[i + 1] : left;
+            nextLevel.push(`hash(${left}+${right})`);
+        }
+        currentLevel = nextLevel;
+        currentIndex = Math.floor(currentIndex / 2);
+    }
+    return proof;
+}
+// 4. VERIFY WITNESS MERKLE ROOT
+async function verifyWitnessMerkleRoot(blockHash, kennyWitnessRoot) {
+    console.log(`🔍 [VERIFY-WITNESS] Checking witness merkle root: ${kennyWitnessRoot}`);
+    try {
+        const blockRequest = JSON.stringify({
+            jsonrpc: '1.0',
+            id: 'bitcoin-rpc',
+            method: 'getblock',
+            params: [blockHash, 2]
+        });
+        const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+            },
+            body: blockRequest
+        });
+        const blockData = await response.json();
+        if (blockData.result && blockData.result.tx && blockData.result.tx[0]) {
+            const coinbaseTx = blockData.result.tx[0];
+            console.log(`📊 [VERIFY-WITNESS] Got coinbase transaction: ${coinbaseTx.txid}`);
+            let witnessCommitment = null;
+            for (const output of coinbaseTx.vout) {
+                if (output.scriptPubKey && output.scriptPubKey.hex) {
+                    const script = output.scriptPubKey.hex;
+                    const match = script.match(/6a24aa21a9ed([0-9a-fA-F]{64})/);
+                    if (match) {
+                        witnessCommitment = match[1];
+                        break;
+                    }
+                }
+            }
+            if (witnessCommitment) {
+                console.log(`✅ [VERIFY-WITNESS] Found witness commitment: ${witnessCommitment}`);
+                if (witnessCommitment.toLowerCase() === kennyWitnessRoot.toLowerCase()) {
+                    console.log(`✅ [VERIFY-WITNESS] Kenny's witness root matches coinbase commitment!`);
+                    return true;
+                }
+                else {
+                    console.error(`❌ [VERIFY-WITNESS] Mismatch!`);
+                    console.error(`   Coinbase: ${witnessCommitment}`);
+                    console.error(`   Kenny:    ${kennyWitnessRoot}`);
+                    return false;
+                }
+            }
+            else {
+                console.error(`❌ [VERIFY-WITNESS] No witness commitment found in coinbase`);
+                return false;
+            }
+        }
+        return false;
+    }
+    catch (error) {
+        console.error(`❌ [VERIFY-WITNESS] Error:`, error);
+        return false;
+    }
+}
+// 5. MAIN VERIFICATION FUNCTION
+async function verifyKennyProofData(txid, kennyProof, blockHash) {
+    console.log("🔍 [VERIFY-KENNY] Starting Kenny proof verification...");
+    const indexValid = await verifyTransactionIndex(txid, blockHash, kennyProof.txIndex);
+    const proofValid = await verifyMerkleProofPath(txid, blockHash, kennyProof.txIndex, kennyProof.wproof);
+    const witnessValid = await verifyWitnessMerkleRoot(blockHash, kennyProof.computedWtxidRoot);
+    console.log("📊 [VERIFY-KENNY] Results:");
+    console.log(`   Transaction Index: ${indexValid ? '✅' : '❌'}`);
+    console.log(`   Merkle Proof: ${proofValid ? '✅' : '❌'}`);
+    console.log(`   Witness Root: ${witnessValid ? '✅' : '❌'}`);
+    return indexValid && proofValid && witnessValid;
 }
 // Add a cache clearing endpoint for testing
 app.delete('/api/proof-kenny-cache/:txid', async (req, res) => {
