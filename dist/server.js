@@ -871,13 +871,263 @@ app.get('/api/proof-kenny-status-by-txid/:txid', async (req, res) => {
         });
     }
 });
-// Helper function to split Kenny's hex strings into 32-byte chunks
+// COMPLETE FIXED processKennyRequest function
+async function processKennyRequest(txid) {
+    let blockHash = '';
+    let blockHeight;
+    // Import Kenny's tool
+    const { bitcoinTxProof } = await import('bitcoin-tx-proof');
+    // STEP 1: Get transaction info to find blockhash
+    try {
+        console.log("🔄 [KENNY] Getting transaction info...");
+        const requestBody = JSON.stringify({
+            jsonrpc: '1.0',
+            id: 'bitcoin-rpc',
+            method: 'getrawtransaction',
+            params: [txid, true]
+        });
+        const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+            },
+            body: requestBody
+        });
+        const rawResponse = await response.text();
+        const txInfo = JSON.parse(rawResponse);
+        if (txInfo.result && txInfo.result.blockhash) {
+            blockHash = txInfo.result.blockhash;
+            console.log(`✅ [KENNY] Found blockhash: ${blockHash}`);
+        }
+        else {
+            throw new Error("Transaction not confirmed or not found");
+        }
+    }
+    catch (error) {
+        throw new Error(`Failed to get transaction info: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+    // STEP 2: Get block height from block hash
+    try {
+        console.log("🔄 [KENNY] Getting block height...");
+        const blockRequestBody = JSON.stringify({
+            jsonrpc: '1.0',
+            id: 'bitcoin-rpc',
+            method: 'getblock',
+            params: [blockHash]
+        });
+        const blockResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+            },
+            body: blockRequestBody
+        });
+        const blockRawResponse = await blockResponse.text();
+        const blockInfo = JSON.parse(blockRawResponse);
+        if (blockInfo.result && blockInfo.result.height) {
+            blockHeight = blockInfo.result.height;
+            console.log(`✅ [KENNY] Found block height: ${blockHeight}`);
+        }
+        else {
+            throw new Error("Could not get block height");
+        }
+    }
+    catch (error) {
+        throw new Error(`Failed to get block height: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+    // STEP 3: Configure Kenny's RPC parameters
+    console.log(`🎯 [KENNY] Using Kenny's tool with txid: ${txid}, blockHeight: ${blockHeight}`);
+    const btcRPCConfig = {
+        url: `http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`,
+        username: process.env.RPC_USER || '',
+        password: process.env.RPC_PASS || ''
+    };
+    // STEP 4: Call Kenny's bitcoinTxProof function
+    console.log(`🔄 [KENNY] Calling Kenny's bitcoinTxProof...`);
+    const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig);
+    console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
+    // STEP 5: DETAILED ANALYSIS OF KENNY'S OUTPUT
+    console.log("================================================================================");
+    console.log("🔍 [KENNY-COMPLETE-ANALYSIS] FULL KENNY OUTPUT ANALYSIS");
+    console.log("================================================================================");
+    // Show ALL keys Kenny returns
+    console.log("📋 [KENNY-ANALYSIS] All keys returned by Kenny:");
+    Object.keys(proof).forEach(key => {
+        const value = proof[key];
+        console.log(`   - ${key}: ${typeof value} (length: ${value?.length || 'N/A'})`);
+    });
+    // Detailed analysis of each field
+    console.log("\n📊 [KENNY-ANALYSIS] Detailed field analysis:");
+    Object.keys(proof).forEach(key => {
+        const value = proof[key];
+        const analysis = {
+            key,
+            type: typeof value,
+            length: value?.length,
+            isString: typeof value === 'string',
+            isArray: Array.isArray(value),
+            isEmpty: !value || value === '',
+            isAllZeros: value === '0000000000000000000000000000000000000000000000000000000000000000',
+            preview: typeof value === 'string' ? value.slice(0, 64) + (value.length > 64 ? '...' : '') : value
+        };
+        console.log(`   ${key}:`, JSON.stringify(analysis, null, 4));
+    });
+    // STEP 6: WITNESS ROOT SELECTION
+    console.log("\n🎯 [KENNY-ANALYSIS] WITNESS ROOT INVESTIGATION:");
+    // Check all possible witness root field names
+    const witnessFields = [
+        'witnessReservedValue',
+        'witnessMerkleRoot',
+        'witness-merkle-root',
+        'witnessCommitment',
+        'wtxidRoot',
+        'computedWtxidRoot',
+        'witnessRoot',
+        'merkleRoot'
+    ];
+    witnessFields.forEach(field => {
+        const fieldValue = proof[field];
+        if (fieldValue !== undefined) {
+            const isAllZeros = fieldValue === '0000000000000000000000000000000000000000000000000000000000000000';
+            const isEmpty = !fieldValue || fieldValue === '';
+            console.log(`   ✅ FOUND ${field}:`);
+            console.log(`      Value: ${fieldValue}`);
+            console.log(`      Type: ${typeof fieldValue}`);
+            console.log(`      Length: ${fieldValue?.length}`);
+            console.log(`      Is all zeros: ${isAllZeros}`);
+            console.log(`      Is empty: ${isEmpty}`);
+            console.log(`      VIABLE FOR WITNESS ROOT: ${!isAllZeros && !isEmpty ? 'YES ✅' : 'NO ❌'}`);
+        }
+        else {
+            console.log(`   ❌ ${field}: NOT FOUND`);
+        }
+    });
+    // Select the best witness root
+    let selectedWitnessRoot = null;
+    let selectedField = null;
+    // Priority order for witness root selection
+    const priorityOrder = ['witnessMerkleRoot', 'witness-merkle-root', 'computedWtxidRoot', 'wtxidRoot', 'witnessRoot', 'witnessCommitment', 'witnessReservedValue'];
+    for (const field of priorityOrder) {
+        const fieldValue = proof[field];
+        if (fieldValue && fieldValue !== '0000000000000000000000000000000000000000000000000000000000000000' && fieldValue !== '') {
+            selectedWitnessRoot = fieldValue;
+            selectedField = field;
+            break;
+        }
+    }
+    console.log(`\n🎯 [KENNY-ANALYSIS] WITNESS ROOT SELECTION:`);
+    console.log(`   Selected witness root field: ${selectedField || 'NONE FOUND'}`);
+    console.log(`   Selected witness root value: ${selectedWitnessRoot || 'ALL ZEROS/EMPTY'}`);
+    // Fallback to witnessReservedValue if nothing found
+    if (!selectedWitnessRoot) {
+        console.log("   ⚠️  WARNING: No valid witness root found! Using witnessReservedValue as fallback");
+        selectedWitnessRoot = proof.witnessReservedValue || '0000000000000000000000000000000000000000000000000000000000000000';
+        selectedField = 'witnessReservedValue (fallback)';
+    }
+    // STEP 7: TRY TO EXTRACT WITNESS COMMITMENT FROM COINBASE
+    let witnessRoot = selectedWitnessRoot;
+    if (!witnessRoot || witnessRoot === '0000000000000000000000000000000000000000000000000000000000000000') {
+        console.log("\n🔍 [KENNY-ANALYSIS] Attempting to extract witness commitment from coinbase...");
+        const extractedCommitment = extractWitnessCommitment(proof.coinbaseTransaction);
+        if (extractedCommitment) {
+            witnessRoot = extractedCommitment;
+            selectedField = 'coinbase witness commitment';
+            console.log("✅ [KENNY-ANALYSIS] Using extracted witness commitment as witness root");
+        }
+    }
+    // STEP 8: PARSE KENNY'S TRANSACTION DATA
+    console.log("\n🔧 [KENNY-ANALYSIS] Parsing transaction data...");
+    const { wtx, witnessData } = parseKennyTransactionData(proof.transaction);
+    // STEP 9: PROCESS PROOF DATA
+    console.log("\n🔧 [KENNY-ANALYSIS] Processing proof data...");
+    // Show raw proof lengths
+    console.log(`📏 [KENNY-ANALYSIS] Raw proof data lengths:`);
+    console.log(`   witnessMerkleProof: ${proof.witnessMerkleProof?.length || 0} chars`);
+    console.log(`   coinbaseMerkleProof: ${proof.coinbaseMerkleProof?.length || 0} chars`);
+    console.log(`   merkleProofDepth: ${proof.merkleProofDepth}`);
+    // Split into chunks
+    const witnessProofChunks = splitIntoChunks(proof.witnessMerkleProof);
+    const coinbaseProofChunks = splitIntoChunks(proof.coinbaseMerkleProof);
+    console.log(`📏 [KENNY-ANALYSIS] Processed proof chunks:`);
+    console.log(`   Witness proof chunks: ${witnessProofChunks.length}`);
+    console.log(`   Coinbase proof chunks: ${coinbaseProofChunks.length}`);
+    // Log first few chunks to verify format
+    console.log(`🔍 [KENNY-ANALYSIS] Sample witness proof chunks:`);
+    witnessProofChunks.slice(0, 3).forEach((chunk, i) => {
+        console.log(`   Chunk ${i}: ${chunk}`);
+    });
+    console.log(`🔍 [KENNY-ANALYSIS] Sample coinbase proof chunks:`);
+    coinbaseProofChunks.slice(0, 3).forEach((chunk, i) => {
+        console.log(`   Chunk ${i}: ${chunk}`);
+    });
+    // STEP 10: BUILD FINAL PROOF
+    console.log("\n🏗️  [KENNY-ANALYSIS] CONSTRUCTING FINAL PROOF:");
+    const formattedProof = {
+        segwit: true,
+        height: proof.blockHeight,
+        header: proof.blockHeader,
+        txIndex: proof.txIndex,
+        treeDepth: proof.merkleProofDepth,
+        // Use actual proof chunks without forcing specific lengths
+        wproof: witnessProofChunks,
+        computedWtxidRoot: witnessRoot || '0000000000000000000000000000000000000000000000000000000000000000',
+        ctxHex: proof.coinbaseTransaction,
+        cproof: coinbaseProofChunks,
+        // Transaction structure with corrected byte order
+        wtx: wtx,
+        witnessData: witnessData
+    };
+    // STEP 11: FINAL VALIDATION
+    console.log("\n🔍 [KENNY-ANALYSIS] FINAL PROOF VALIDATION:");
+    console.log(`   Height: ${formattedProof.height}`);
+    console.log(`   TxIndex: ${formattedProof.txIndex}`);
+    console.log(`   TreeDepth: ${formattedProof.treeDepth}`);
+    console.log(`   Header length: ${formattedProof.header?.length || 0}`);
+    console.log(`   Witness root: ${formattedProof.computedWtxidRoot}`);
+    console.log(`   Witness root source: ${selectedField}`);
+    console.log(`   Witness proof chunks: ${formattedProof.wproof.length}`);
+    console.log(`   Coinbase proof chunks: ${formattedProof.cproof.length}`);
+    console.log(`   Coinbase tx length: ${formattedProof.ctxHex?.length || 0}`);
+    console.log(`   WTX inputs: ${formattedProof.wtx.ins.length}`);
+    console.log(`   WTX outputs: ${formattedProof.wtx.outs.length}`);
+    console.log(`   Witness data length: ${formattedProof.witnessData?.length || 0}`);
+    // Check for potential issues
+    const issues = [];
+    if (formattedProof.computedWtxidRoot === '0000000000000000000000000000000000000000000000000000000000000000') {
+        issues.push("Using all-zeros witness root");
+    }
+    if (formattedProof.wproof.length === 0) {
+        issues.push("Empty witness proof");
+    }
+    if (formattedProof.cproof.length === 0) {
+        issues.push("Empty coinbase proof");
+    }
+    if (formattedProof.treeDepth && formattedProof.wproof.length !== formattedProof.treeDepth) {
+        issues.push(`Witness proof length (${formattedProof.wproof.length}) doesn't match tree depth (${formattedProof.treeDepth})`);
+    }
+    if (issues.length > 0) {
+        console.log("\n⚠️ [KENNY-ANALYSIS] POTENTIAL ISSUES DETECTED:");
+        issues.forEach(issue => console.log(`   - ${issue}`));
+    }
+    else {
+        console.log("\n✅ [KENNY-ANALYSIS] NO OBVIOUS ISSUES DETECTED");
+    }
+    console.log("================================================================================");
+    console.log("🎉 [KENNY-ANALYSIS] ANALYSIS COMPLETE - RETURNING PROOF");
+    console.log("================================================================================");
+    return formattedProof;
+}
+// Helper function to split hex strings into 32-byte chunks
 function splitIntoChunks(hexString) {
     if (!hexString || typeof hexString !== 'string') {
-        return Array(14).fill('0'.repeat(64)); // 14 empty 32-byte chunks
+        console.log("⚠️ [CHUNK] Empty or invalid hex string provided");
+        return [];
     }
     // Remove 0x prefix if present
     const cleanHex = hexString.startsWith('0x') ? hexString.slice(2) : hexString;
+    console.log(`🔧 [CHUNK] Processing hex string of length: ${cleanHex.length}`);
     // Split into 64-character chunks (32 bytes each)
     const chunks = [];
     for (let i = 0; i < cleanHex.length; i += 64) {
@@ -885,20 +1135,110 @@ function splitIntoChunks(hexString) {
         if (chunk.length === 64) {
             chunks.push(chunk);
         }
+        else if (chunk.length > 0) {
+            // Pad incomplete chunks to 64 chars
+            chunks.push(chunk.padEnd(64, '0'));
+            console.log(`🔧 [CHUNK] Padded incomplete chunk: ${chunk.length} -> 64 chars`);
+        }
     }
-    // Ensure exactly 14 chunks (pad if needed)
-    while (chunks.length < 14) {
-        chunks.push('0'.repeat(64));
+    console.log(`✅ [CHUNK] Created ${chunks.length} chunks from ${cleanHex.length} chars`);
+    return chunks;
+}
+// Enhanced transaction parser that keeps Kenny's big-endian format
+function parseKennyTransactionData(combinedTxHex) {
+    console.log("🔧 [TX-PARSER] Parsing Kenny's combined transaction data");
+    console.log("🔧 [TX-PARSER] Input length:", combinedTxHex.length);
+    const cleanHex = combinedTxHex.startsWith('0x') ? combinedTxHex.slice(2) : combinedTxHex;
+    let offset = 0;
+    // Parse version (4 bytes) - KEEP AS-IS (already big-endian)
+    const version = cleanHex.slice(offset, offset + 8);
+    offset += 8;
+    console.log(`✅ [TX-PARSER] Version: 0x${version} (keeping Kenny's format)`);
+    // Check for SegWit marker and flag
+    const marker = cleanHex.slice(offset, offset + 2);
+    const flag = cleanHex.slice(offset + 2, offset + 4);
+    const isSegwit = marker === "00" && flag === "01";
+    console.log(`✅ [TX-PARSER] Marker: ${marker}, Flag: ${flag}, IsSegWit: ${isSegwit}`);
+    if (isSegwit) {
+        offset += 4;
     }
-    console.log(`🔧 [KENNY-FIX] Split ${cleanHex.length} chars into ${chunks.length} chunks`);
-    return chunks.slice(0, 14);
+    // Parse input count
+    const inputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
+    offset += 2;
+    console.log(`✅ [TX-PARSER] Input count: ${inputCount}`);
+    // Parse inputs
+    const inputs = [];
+    for (let i = 0; i < inputCount; i++) {
+        console.log(`🔧 [TX-PARSER] Parsing input ${i + 1}/${inputCount}`);
+        const prevHash = cleanHex.slice(offset, offset + 64);
+        offset += 64;
+        const prevIndex = cleanHex.slice(offset, offset + 8);
+        offset += 8;
+        const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
+        offset += 2;
+        const script = cleanHex.slice(offset, offset + (scriptLen * 2));
+        offset += (scriptLen * 2);
+        const sequence = cleanHex.slice(offset, offset + 8);
+        offset += 8;
+        inputs.push({
+            outpoint: {
+                hash: `0x${prevHash}`,
+                index: `0x${prevIndex}` // Keep Kenny's format
+            },
+            scriptSig: `0x${script}`,
+            sequence: `0x${sequence}` // Keep Kenny's format
+        });
+        console.log(`✅ [TX-PARSER] Input ${i + 1}: index=${prevIndex}, sequence=${sequence}`);
+    }
+    // Parse output count
+    const outputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
+    offset += 2;
+    console.log(`✅ [TX-PARSER] Output count: ${outputCount}`);
+    // Parse outputs
+    const outputs = [];
+    for (let i = 0; i < outputCount; i++) {
+        console.log(`🔧 [TX-PARSER] Parsing output ${i + 1}/${outputCount}`);
+        const value = cleanHex.slice(offset, offset + 16);
+        offset += 16;
+        const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
+        offset += 2;
+        const script = cleanHex.slice(offset, offset + (scriptLen * 2));
+        offset += (scriptLen * 2);
+        outputs.push({
+            value: `0x${value}`, // Keep Kenny's big-endian format
+            scriptPubKey: `0x${script}`
+        });
+        console.log(`✅ [TX-PARSER] Output ${i + 1}: value=${value}`);
+    }
+    // Extract witness data and locktime
+    let witnessData = "0x";
+    let locktime = "0x00000000";
+    if (isSegwit && offset < cleanHex.length - 8) {
+        const witnessStart = offset;
+        const witnessEnd = cleanHex.length - 8;
+        witnessData = `0x${cleanHex.slice(witnessStart, witnessEnd)}`;
+        locktime = `0x${cleanHex.slice(-8)}`; // Keep Kenny's format
+        console.log(`✅ [TX-PARSER] SegWit - Witness data length: ${witnessData.length - 2}, Locktime: ${locktime}`);
+    }
+    else {
+        locktime = `0x${cleanHex.slice(-8)}`; // Keep Kenny's format
+        console.log(`✅ [TX-PARSER] Non-SegWit - Locktime: ${locktime}`);
+    }
+    const parsedTx = {
+        version: `0x${version}`, // Keep Kenny's big-endian format
+        ins: inputs,
+        outs: outputs,
+        locktime: locktime // Keep Kenny's format
+    };
+    console.log("✅ [TX-PARSER] Using Kenny's original big-endian format (no byte reversal)");
+    return {
+        wtx: parsedTx,
+        witnessData: witnessData
+    };
 }
 function extractWitnessCommitment(coinbaseTxHex) {
     try {
         console.log("🔍 [WITNESS-EXTRACT] Extracting witness commitment from coinbase...");
-        console.log("🔍 [WITNESS-EXTRACT] Coinbase hex length:", coinbaseTxHex.length);
-        // Look for the witness commitment pattern in the coinbase transaction
-        // Witness commitment is in an OP_RETURN output with prefix aa21a9ed
         const commitmentPattern = /aa21a9ed([0-9a-fA-F]{64})/;
         const match = coinbaseTxHex.match(commitmentPattern);
         if (match && match[1]) {
@@ -929,289 +1269,6 @@ function reverse8Bytes(hex) {
     const padded = clean.padStart(16, '0');
     const bytes = padded.match(/.{2}/g) || [];
     return bytes.reverse().join('');
-}
-// FIXED: Remove all byte order reversals - Kenny already provides correct big-endian format
-function parseKennyTransactionData(combinedTxHex) {
-    console.log("🔧 [TX-PARSER] Parsing Kenny's combined transaction data");
-    const cleanHex = combinedTxHex.startsWith('0x') ? combinedTxHex.slice(2) : combinedTxHex;
-    let offset = 0;
-    // Parse version (4 bytes) - KEEP AS-IS (already big-endian)
-    const version = cleanHex.slice(offset, offset + 8);
-    offset += 8;
-    console.log(`✅ [TX-PARSER] Version: 0x${version} (no reversal needed)`);
-    // Check for SegWit marker and flag
-    const marker = cleanHex.slice(offset, offset + 2);
-    const flag = cleanHex.slice(offset + 2, offset + 4);
-    const isSegwit = marker === "00" && flag === "01";
-    if (isSegwit) {
-        offset += 4;
-    }
-    // Parse input count
-    const inputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
-    offset += 2;
-    // Parse inputs
-    const inputs = [];
-    for (let i = 0; i < inputCount; i++) {
-        // Previous output hash (32 bytes) - keep as-is
-        const prevHash = cleanHex.slice(offset, offset + 64);
-        offset += 64;
-        // Previous output index (4 bytes) - KEEP AS-IS (already big-endian)
-        const prevIndex = cleanHex.slice(offset, offset + 8);
-        offset += 8;
-        // Script length and data
-        const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
-        offset += 2;
-        const script = cleanHex.slice(offset, offset + (scriptLen * 2));
-        offset += (scriptLen * 2);
-        // Sequence (4 bytes) - KEEP AS-IS (already big-endian)
-        const sequence = cleanHex.slice(offset, offset + 8);
-        offset += 8;
-        inputs.push({
-            outpoint: {
-                hash: `0x${prevHash}`,
-                index: `0x${prevIndex}` // ✅ NO REVERSAL - Kenny already provides correct format
-            },
-            scriptSig: `0x${script}`,
-            sequence: `0x${sequence}` // ✅ NO REVERSAL
-        });
-    }
-    // Parse output count
-    const outputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
-    offset += 2;
-    // Parse outputs
-    const outputs = [];
-    for (let i = 0; i < outputCount; i++) {
-        // Value (8 bytes) - KEEP AS-IS (already big-endian)
-        const value = cleanHex.slice(offset, offset + 16);
-        offset += 16;
-        // Script length and data
-        const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
-        offset += 2;
-        const script = cleanHex.slice(offset, offset + (scriptLen * 2));
-        offset += (scriptLen * 2);
-        outputs.push({
-            value: `0x${value}`, // ✅ NO REVERSAL - Kenny already provides correct big-endian format
-            scriptPubKey: `0x${script}`
-        });
-    }
-    // Extract witness data and locktime
-    let witnessData = "0x";
-    let locktime = "0x00000000";
-    if (isSegwit && offset < cleanHex.length - 8) {
-        const witnessStart = offset;
-        const witnessEnd = cleanHex.length - 8;
-        witnessData = `0x${cleanHex.slice(witnessStart, witnessEnd)}`;
-        locktime = `0x${cleanHex.slice(-8)}`; // ✅ NO REVERSAL
-    }
-    else {
-        locktime = `0x${cleanHex.slice(-8)}`; // ✅ NO REVERSAL
-    }
-    const parsedTx = {
-        version: `0x${version}`, // ✅ NO REVERSAL - Kenny's format is correct
-        ins: inputs,
-        outs: outputs,
-        locktime: locktime // ✅ NO REVERSAL
-    };
-    console.log("✅ [TX-PARSER] Using Kenny's original big-endian format (no byte reversal)");
-    return {
-        wtx: parsedTx,
-        witnessData: witnessData
-    };
-}
-// Fixed processKennyRequest function with proper typing
-async function processKennyRequest(txid) {
-    let blockHash = '';
-    // Import Kenny's tool
-    const { bitcoinTxProof } = await import('bitcoin-tx-proof');
-    // Get transaction info to find blockhash
-    try {
-        console.log("🔄 [KENNY] Getting transaction info...");
-        const requestBody = JSON.stringify({
-            jsonrpc: '1.0',
-            id: 'bitcoin-rpc',
-            method: 'getrawtransaction',
-            params: [txid, true]
-        });
-        const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-            },
-            body: requestBody
-        });
-        const rawResponse = await response.text();
-        const txInfo = JSON.parse(rawResponse);
-        if (txInfo.result && txInfo.result.blockhash) {
-            blockHash = txInfo.result.blockhash;
-            console.log(`✅ [KENNY] Found blockhash: ${blockHash}`);
-        }
-        else {
-            throw new Error("Transaction not confirmed or not found");
-        }
-    }
-    catch (error) {
-        throw new Error(`Failed to get transaction info: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-    // Get block height from block hash
-    let blockHeight;
-    try {
-        const blockRequestBody = JSON.stringify({
-            jsonrpc: '1.0',
-            id: 'bitcoin-rpc',
-            method: 'getblock',
-            params: [blockHash]
-        });
-        const blockResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-            },
-            body: blockRequestBody
-        });
-        const blockRawResponse = await blockResponse.text();
-        const blockInfo = JSON.parse(blockRawResponse);
-        if (blockInfo.result && blockInfo.result.height) {
-            blockHeight = blockInfo.result.height;
-            console.log(`✅ [KENNY] Found block height: ${blockHeight}`);
-        }
-        else {
-            throw new Error("Could not get block height");
-        }
-    }
-    catch (error) {
-        throw new Error(`Failed to get block height: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-    console.log(`🎯 [KENNY] Using Kenny's tool with txid: ${txid}, blockHeight: ${blockHeight}`);
-    // Configure Kenny's RPC parameters
-    const btcRPCConfig = {
-        url: `http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`,
-        username: process.env.RPC_USER || '',
-        password: process.env.RPC_PASS || ''
-    };
-    // Use Kenny's bitcoinTxProof function - cast to our flexible type
-    console.log(`🔄 [KENNY] Calling Kenny's bitcoinTxProof...`);
-    const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig);
-    console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
-    // 🔍 COMPLETE ANALYSIS OF KENNY'S OUTPUT
-    console.log("================================================================================");
-    console.log("🔍 [KENNY-COMPLETE-ANALYSIS] FULL KENNY OUTPUT ANALYSIS");
-    console.log("================================================================================");
-    // 1. Show ALL keys Kenny returns
-    console.log("📋 [KENNY-ANALYSIS] All keys returned by Kenny:");
-    Object.keys(proof).forEach(key => {
-        const value = proof[key]; // Use any for dynamic property access
-        console.log(`   - ${key}: ${typeof value} (length: ${value?.length || 'N/A'})`);
-    });
-    // 2. Detailed analysis of each field
-    console.log("\n📊 [KENNY-ANALYSIS] Detailed field analysis:");
-    Object.keys(proof).forEach(key => {
-        const value = proof[key]; // Use any for dynamic property access
-        const analysis = {
-            key,
-            type: typeof value,
-            length: value?.length,
-            isString: typeof value === 'string',
-            isArray: Array.isArray(value),
-            isEmpty: !value || value === '',
-            isAllZeros: value === '0000000000000000000000000000000000000000000000000000000000000000',
-            preview: typeof value === 'string' ? value.slice(0, 64) + (value.length > 64 ? '...' : '') : value
-        };
-        console.log(`   ${key}:`, JSON.stringify(analysis, null, 4));
-    });
-    // 3. WITNESS-SPECIFIC ANALYSIS
-    console.log("\n🎯 [KENNY-ANALYSIS] WITNESS MERKLE ROOT INVESTIGATION:");
-    const witnessFields = [
-        'witnessReservedValue',
-        'witnessMerkleRoot',
-        'witnessCommitment',
-        'wtxidRoot',
-        'computedWtxidRoot',
-        'witnessRoot',
-        'merkleRoot'
-    ];
-    witnessFields.forEach(field => {
-        const fieldValue = proof[field]; // Use any for dynamic property access
-        if (fieldValue !== undefined) {
-            const isAllZeros = fieldValue === '0000000000000000000000000000000000000000000000000000000000000000';
-            const isEmpty = !fieldValue || fieldValue === '';
-            console.log(`   ✅ FOUND ${field}:`);
-            console.log(`      Value: ${fieldValue}`);
-            console.log(`      Type: ${typeof fieldValue}`);
-            console.log(`      Length: ${fieldValue?.length}`);
-            console.log(`      Is all zeros: ${isAllZeros}`);
-            console.log(`      Is empty: ${isEmpty}`);
-            console.log(`      VIABLE FOR WITNESS ROOT: ${!isAllZeros && !isEmpty ? 'YES ✅' : 'NO ❌'}`);
-        }
-        else {
-            console.log(`   ❌ ${field}: NOT FOUND`);
-        }
-    });
-    // 4. DETERMINE THE CORRECT WITNESS ROOT
-    console.log("\n🎯 [KENNY-ANALYSIS] WITNESS ROOT SELECTION:");
-    let selectedWitnessRoot = null;
-    let selectedField = null;
-    // Priority order for witness root selection
-    const priorityOrder = ['witnessMerkleRoot', 'computedWtxidRoot', 'wtxidRoot', 'witnessRoot', 'witnessCommitment', 'witnessReservedValue'];
-    for (const field of priorityOrder) {
-        const fieldValue = proof[field]; // Use any for dynamic property access
-        if (fieldValue && fieldValue !== '0000000000000000000000000000000000000000000000000000000000000000' && fieldValue !== '') {
-            selectedWitnessRoot = fieldValue;
-            selectedField = field;
-            break;
-        }
-    }
-    console.log(`   Selected witness root field: ${selectedField || 'NONE FOUND'}`);
-    console.log(`   Selected witness root value: ${selectedWitnessRoot || 'ALL ZEROS/EMPTY'}`);
-    if (!selectedWitnessRoot) {
-        console.log("   ⚠️  WARNING: No valid witness root found! Using witnessReservedValue as fallback");
-        selectedWitnessRoot = proof.witnessReservedValue || '0000000000000000000000000000000000000000000000000000000000000000';
-        selectedField = 'witnessReservedValue (fallback)';
-    }
-    // 5. FINAL PROOF CONSTRUCTION WITH WITNESS ROOT EXTRACTION
-    console.log("\n🏗️  [KENNY-ANALYSIS] CONSTRUCTING FINAL PROOF:");
-    // Try to extract witness commitment from coinbase transaction
-    let witnessRoot = selectedWitnessRoot;
-    if (!witnessRoot || witnessRoot === '0000000000000000000000000000000000000000000000000000000000000000') {
-        console.log("🔍 [KENNY-ANALYSIS] Attempting to extract witness commitment from coinbase...");
-        const extractedCommitment = extractWitnessCommitment(proof.coinbaseTransaction);
-        if (extractedCommitment) {
-            witnessRoot = extractedCommitment;
-            selectedField = 'coinbase witness commitment';
-            console.log("✅ [KENNY-ANALYSIS] Using extracted witness commitment as witness root");
-        }
-    }
-    // 🔧 PARSE KENNY'S COMBINED TRANSACTION DATA
-    console.log("🔧 [KENNY-ANALYSIS] Parsing transaction data...");
-    const { wtx, witnessData } = parseKennyTransactionData(proof.transaction);
-    const formattedProof = {
-        segwit: true,
-        height: proof.blockHeight,
-        header: proof.blockHeader,
-        txIndex: proof.txIndex,
-        treeDepth: proof.merkleProofDepth,
-        wproof: splitIntoChunks(proof.witnessMerkleProof),
-        computedWtxidRoot: witnessRoot || '0000000000000000000000000000000000000000000000000000000000000000',
-        ctxHex: proof.coinbaseTransaction,
-        cproof: splitIntoChunks(proof.coinbaseMerkleProof),
-        // 🔧 ADD THE PARSED TRANSACTION STRUCTURE AND WITNESS DATA
-        wtx: wtx,
-        witnessData: witnessData
-    };
-    console.log(`   Final computedWtxidRoot: ${formattedProof.computedWtxidRoot}`);
-    console.log(`   Source field: ${selectedField}`);
-    console.log(`   Is all zeros: ${formattedProof.computedWtxidRoot === '0000000000000000000000000000000000000000000000000000000000000000'}`);
-    if (formattedProof.computedWtxidRoot === '0000000000000000000000000000000000000000000000000000000000000000') {
-        console.log("⚠️  [KENNY-ANALYSIS] WARNING: Still using all-zeros witness root - Clarity verification may fail");
-    }
-    else {
-        console.log("✅ [KENNY-ANALYSIS] SUCCESS: Found valid witness root - Clarity verification should pass");
-    }
-    console.log("================================================================================");
-    console.log("🎉 [KENNY-ANALYSIS] ANALYSIS COMPLETE - RETURNING PROOF");
-    console.log("================================================================================");
-    return formattedProof;
 }
 // Add a cache clearing endpoint for testing
 app.delete('/api/proof-kenny-cache/:txid', async (req, res) => {
