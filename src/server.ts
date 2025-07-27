@@ -1235,171 +1235,106 @@ function reverse8Bytes(hex: string): string {
   return bytes.reverse().join('');
 }
 
-// Enhanced parseKennyTransactionData function with FIXED byte order
+// FIXED: Remove all byte order reversals - Kenny already provides correct big-endian format
 function parseKennyTransactionData(combinedTxHex: string) {
   console.log("🔧 [TX-PARSER] Parsing Kenny's combined transaction data");
-  console.log("🔧 [TX-PARSER] Input length:", combinedTxHex.length);
-  console.log("🔧 [TX-PARSER] Raw input:", combinedTxHex);
   
-  // Remove 0x prefix if present
   const cleanHex = combinedTxHex.startsWith('0x') ? combinedTxHex.slice(2) : combinedTxHex;
-  console.log("🔧 [TX-PARSER] Clean hex length:", cleanHex.length);
-  
   let offset = 0;
   
-  // Parse version (4 bytes) - FIXED: reverse byte order, trim to 4 bytes
+  // Parse version (4 bytes) - KEEP AS-IS (already big-endian)
   const version = cleanHex.slice(offset, offset + 8);
   offset += 8;
-  console.log(`✅ [TX-PARSER] Version: 0x${reverse4Bytes(version)} (offset: ${offset})`);
+  console.log(`✅ [TX-PARSER] Version: 0x${version} (no reversal needed)`);
   
   // Check for SegWit marker and flag
   const marker = cleanHex.slice(offset, offset + 2);
   const flag = cleanHex.slice(offset + 2, offset + 4);
   const isSegwit = marker === "00" && flag === "01";
-  console.log(`✅ [TX-PARSER] Marker: ${marker}, Flag: ${flag}, IsSegWit: ${isSegwit}`);
   
   if (isSegwit) {
-    offset += 4; // Skip marker and flag
-    console.log(`✅ [TX-PARSER] SegWit detected, offset now: ${offset}`);
+    offset += 4;
   }
   
   // Parse input count
   const inputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
   offset += 2;
-  console.log(`✅ [TX-PARSER] Input count: ${inputCount} (offset: ${offset})`);
   
   // Parse inputs
   const inputs = [];
   for (let i = 0; i < inputCount; i++) {
-    console.log(`🔧 [TX-PARSER] Parsing input ${i + 1}/${inputCount}`);
-    
-    // Previous output hash (32 bytes = 64 hex chars) - keep as-is (already correct order)
+    // Previous output hash (32 bytes) - keep as-is
     const prevHash = cleanHex.slice(offset, offset + 64);
     offset += 64;
-    console.log(`   Hash: ${prevHash} (offset: ${offset})`);
     
-    // Previous output index (4 bytes = 8 hex chars) - FIXED: reverse byte order, trim to 4 bytes
+    // Previous output index (4 bytes) - KEEP AS-IS (already big-endian)
     const prevIndex = cleanHex.slice(offset, offset + 8);
     offset += 8;
-    console.log(`   Index: ${prevIndex} -> ${reverse4Bytes(prevIndex)} (offset: ${offset})`);
     
-    // Script length (1 byte = 2 hex chars, assuming < 253)
+    // Script length and data
     const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
     offset += 2;
-    console.log(`   Script length: ${scriptLen} (offset: ${offset})`);
-    
-    // Script data
     const script = cleanHex.slice(offset, offset + (scriptLen * 2));
     offset += (scriptLen * 2);
-    console.log(`   Script: ${script} (offset: ${offset})`);
     
-    // Sequence (4 bytes = 8 hex chars) - FIXED: reverse byte order, trim to 4 bytes
+    // Sequence (4 bytes) - KEEP AS-IS (already big-endian)
     const sequence = cleanHex.slice(offset, offset + 8);
     offset += 8;
-    console.log(`   Sequence: ${sequence} -> ${reverse4Bytes(sequence)} (offset: ${offset})`);
     
     inputs.push({
       outpoint: {
         hash: `0x${prevHash}`,
-        index: `0x${reverse4Bytes(prevIndex).padEnd(8, '0')}`
+        index: `0x${prevIndex}` // ✅ NO REVERSAL - Kenny already provides correct format
       },
       scriptSig: `0x${script}`,
-      sequence: `0x${reverse4Bytes(sequence).padEnd(8, '0')}`
+      sequence: `0x${sequence}` // ✅ NO REVERSAL
     });
-    
-    console.log(`✅ [TX-PARSER] Input ${i + 1} parsed:`, inputs[i]);
   }
   
   // Parse output count
   const outputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
   offset += 2;
-  console.log(`✅ [TX-PARSER] Output count: ${outputCount} (offset: ${offset})`);
   
   // Parse outputs
   const outputs = [];
   for (let i = 0; i < outputCount; i++) {
-    console.log(`🔧 [TX-PARSER] Parsing output ${i + 1}/${outputCount}`);
-    
-    // Value (8 bytes = 16 hex chars) - FIXED: reverse byte order, keep 8 bytes
+    // Value (8 bytes) - KEEP AS-IS (already big-endian)
     const value = cleanHex.slice(offset, offset + 16);
     offset += 16;
-    console.log(`   Value: ${value} -> ${reverse8Bytes(value)} (length: ${value.length}) (offset: ${offset})`);
     
-    // CRITICAL CHECK: Ensure value is exactly 16 chars
-    if (value.length !== 16) {
-      console.error(`❌ [TX-PARSER] ERROR: Value length is ${value.length}, should be 16!`);
-      console.error(`❌ [TX-PARSER] Raw value: "${value}"`);
-      console.error(`❌ [TX-PARSER] At offset: ${offset - 16} to ${offset}`);
-    }
-    
-    // Script length
+    // Script length and data
     const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
     offset += 2;
-    console.log(`   Script length: ${scriptLen} (offset: ${offset})`);
-    
-    // Script data
     const script = cleanHex.slice(offset, offset + (scriptLen * 2));
     offset += (scriptLen * 2);
-    console.log(`   Script: ${script} (length: ${script.length}) (offset: ${offset})`);
     
-    const formattedOutput = {
-      value: `0x${reverse8Bytes(value)}`,  // ✅ FIXED: 8 bytes for values
+    outputs.push({
+      value: `0x${value}`, // ✅ NO REVERSAL - Kenny already provides correct big-endian format
       scriptPubKey: `0x${script}`
-    };
-    
-    outputs.push(formattedOutput);
-    console.log(`✅ [TX-PARSER] Output ${i + 1} parsed:`, formattedOutput);
-    
-    // VALIDATE OUTPUT FORMAT
-    if (formattedOutput.value.length !== 18) { // 0x + 16 chars
-      console.error(`❌ [TX-PARSER] ERROR: Formatted value length is ${formattedOutput.value.length}, should be 18!`);
-    }
+    });
   }
   
-  // Extract witness data (if SegWit)
+  // Extract witness data and locktime
   let witnessData = "0x";
   let locktime = "0x00000000";
   
   if (isSegwit && offset < cleanHex.length - 8) {
     const witnessStart = offset;
     const witnessEnd = cleanHex.length - 8;
-    
     witnessData = `0x${cleanHex.slice(witnessStart, witnessEnd)}`;
-    
-    // FIXED: reverse locktime bytes, trim to 4 bytes
-    const locktimeRaw = cleanHex.slice(-8);
-    locktime = `0x${reverse4Bytes(locktimeRaw).padEnd(8, '0')}`;
-    
-    console.log(`✅ [TX-PARSER] Witness data: ${witnessData.slice(0, 50)}... (length: ${witnessData.length - 2})`);
-    console.log(`✅ [TX-PARSER] Locktime: ${locktimeRaw} -> ${locktime}`);
+    locktime = `0x${cleanHex.slice(-8)}`; // ✅ NO REVERSAL
   } else {
-    // FIXED: reverse locktime bytes, trim to 4 bytes
-    const locktimeRaw = cleanHex.slice(-8);
-    locktime = `0x${reverse4Bytes(locktimeRaw).padEnd(8, '0')}`;
-    console.log(`✅ [TX-PARSER] Locktime (non-SegWit): ${locktimeRaw} -> ${locktime}`);
+    locktime = `0x${cleanHex.slice(-8)}`; // ✅ NO REVERSAL
   }
   
   const parsedTx = {
-    version: `0x${reverse4Bytes(version).padEnd(8, '0')}`,
+    version: `0x${version}`, // ✅ NO REVERSAL - Kenny's format is correct
     ins: inputs,
     outs: outputs,
-    locktime: locktime  // ✅ FIXED - 4 bytes
+    locktime: locktime // ✅ NO REVERSAL
   };
   
-  console.log("🎯 [TX-PARSER] FINAL VALIDATION:");
-  console.log("   Version length:", parsedTx.version.length, "(should be 10)");
-  console.log("   Inputs count:", parsedTx.ins.length);
-  console.log("   Outputs count:", parsedTx.outs.length);
-  
-  // Validate each output
-  parsedTx.outs.forEach((out, i) => {
-    console.log(`   Output ${i}: value length = ${out.value.length} (should be 18), script length = ${out.scriptPubKey.length}`);
-    if (out.value.length !== 18) {
-      console.error(`❌ [FINAL-VALIDATION] Output ${i} value is malformed: ${out.value}`);
-    }
-  });
-  
-  console.log("✅ [TX-PARSER] Parsing complete");
+  console.log("✅ [TX-PARSER] Using Kenny's original big-endian format (no byte reversal)");
   
   return {
     wtx: parsedTx,
