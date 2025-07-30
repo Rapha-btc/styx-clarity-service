@@ -170,6 +170,37 @@ interface BitcoinTransaction {
   height?: number;
 }
 
+interface TxInfo {
+  result?: {
+    blockhash?: string;
+    vin: Array<{
+      txinwitness?: string[];
+      [key: string]: any;
+    }>;
+    [key: string]: any;
+  };
+  error?: any;
+}
+
+interface BlockInfo {
+  result?: {
+    height?: number;
+    [key: string]: any;
+  };
+  error?: any;
+}
+
+interface TxDetail {
+  result?: {
+    vin: Array<{
+      txinwitness?: string[];
+      [key: string]: any;
+    }>;
+    [key: string]: any;
+  };
+  error?: any;
+}
+
 // Health check endpoint
 // app.get('/health', (req, res) => {
 //   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -1126,50 +1157,44 @@ app.get('/api/proof-kenny-status-by-txid/:txid', async (req, res) => {
   }
 });
 
-// COMPLETE FIXED processKennyRequest function
-// SIMPLIFIED Kenny processing - only essential fixes
+// ADD this function after the Kenny endpoint definitions and before the cache clearing endpoints
 async function processKennyRequest(txid: string): Promise<any> {
-  let blockHash = '';
-  let blockHeight: number;
+  console.log(`🔄 [KENNY] Starting simplified Kenny processing for txid: ${txid}`);
   
   // Import Kenny's tool
   const { bitcoinTxProof } = await import('bitcoin-tx-proof');
   
-  // Get transaction info to find blockhash
+  // Get block height first (needed for Kenny)
+  let blockHeight: number;
+  let blockHash: string;
+  
   try {
-    console.log("🔄 [KENNY] Getting transaction info...");
-    
-    const requestBody = JSON.stringify({
+    // Get transaction info to find blockhash and height
+    const txRequestBody = JSON.stringify({
       jsonrpc: '1.0',
       id: 'bitcoin-rpc',
       method: 'getrawtransaction',
       params: [txid, true]
     });
     
-    const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+    const txResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
       },
-      body: requestBody
+      body: txRequestBody
     });
     
-    const rawResponse = await response.text();
-    const txInfo = JSON.parse(rawResponse);
+    const txInfo = await txResponse.json() as TxInfo;
     
-    if (txInfo.result && txInfo.result.blockhash) {
-      blockHash = txInfo.result.blockhash;
-      console.log(`✅ [KENNY] Found blockhash: ${blockHash}`);
-    } else {
+    if (!txInfo.result || !txInfo.result.blockhash) {
       throw new Error("Transaction not confirmed or not found");
     }
-  } catch (error) {
-    throw new Error(`Failed to get transaction info: ${error instanceof Error ? error.message : 'Unknown error'}`);
-  }
-
-  // Get block height from block hash
-  try {
+    
+    blockHash = txInfo.result.blockhash;
+    
+    // Get block height from block hash
     const blockRequestBody = JSON.stringify({
       jsonrpc: '1.0',
       id: 'bitcoin-rpc',
@@ -1186,17 +1211,18 @@ async function processKennyRequest(txid: string): Promise<any> {
       body: blockRequestBody
     });
     
-    const blockRawResponse = await blockResponse.text();
-    const blockInfo = JSON.parse(blockRawResponse);
+    const blockInfo = await blockResponse.json() as BlockInfo;
     
-    if (blockInfo.result && blockInfo.result.height) {
-      blockHeight = blockInfo.result.height;
-      console.log(`✅ [KENNY] Found block height: ${blockHeight}`);
-    } else {
-      throw new Error("Could not get block height");
+    if (!blockInfo.result || !blockInfo.result.height) {
+      throw new Error("Could not get block height");  
     }
+    
+    blockHeight = blockInfo.result.height;
+    
+    console.log(`✅ [KENNY] Found block height: ${blockHeight}, blockhash: ${blockHash}`);
+    
   } catch (error) {
-    throw new Error(`Failed to get block height: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new Error(`Failed to get transaction/block info: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
   
   // Configure Kenny's RPC parameters
@@ -1207,377 +1233,88 @@ async function processKennyRequest(txid: string): Promise<any> {
   };
   
   // Call Kenny's bitcoinTxProof function
-  console.log(`🔄 [KENNY] Calling Kenny's bitcoinTxProof...`);
-  const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig) as KennyProofResult;
+  console.log(`🔄 [KENNY] Calling Kenny's bitcoinTxProof for block height ${blockHeight}...`);
+  const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig);
   
   console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
-
-  // ESSENTIAL FIX 1: Find witness root
-  let witnessRoot = '';
+  console.log(`✅ [KENNY] Proof keys:`, Object.keys(proof));
   
-  // Try to extract witness commitment from coinbase transaction
-  const witnessCommitment = extractWitnessCommitment(proof.coinbaseTransaction);
-  if (witnessCommitment) {
-    witnessRoot = witnessCommitment;
-    console.log("✅ [KENNY] Using extracted witness commitment as witness root");
-  } else {
-    // Fallback to witnessReservedValue (all zeros)
-    witnessRoot = proof.witnessReservedValue || '0000000000000000000000000000000000000000000000000000000000000000';
-    console.log("⚠️ [KENNY] Using witnessReservedValue as fallback witness root");
+  // Now get the detailed transaction data using RPC (this is Friedger's key insight)
+  console.log(`🔄 [KENNY] Getting detailed transaction data via RPC...`);
+  
+  const detailTxRequestBody = JSON.stringify({
+    jsonrpc: '1.0',
+    id: 'bitcoin-rpc', 
+    method: 'getrawtransaction',
+    params: [txid, 1, blockHash] // verbose=1, include blockhash
+  });
+  
+  const detailTxResponse = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
+    },
+    body: detailTxRequestBody
+  });
+  
+  const txDetail = await detailTxResponse.json() as TxDetail;
+  
+  if (!txDetail.result) {
+    throw new Error("Could not get detailed transaction data");
   }
-
-  // ESSENTIAL FIX 2: Parse transaction data WITHOUT byte reversal
-  const { wtx, witnessData } = parseKennyTransactionDataSimple(proof.transaction);
-
-  // ESSENTIAL FIX 3: Split proofs into chunks (dynamic length)
-  const witnessProofChunks = splitIntoChunksSimple(proof.witnessMerkleProof);
-  const coinbaseProofChunks = splitIntoChunksSimple(proof.coinbaseMerkleProof);
-
-  // Build final proof
+  
+  const tx = txDetail.result;
+  
+  console.log("✅ [KENNY] Got detailed transaction data via RPC");
+  
+  // Calculate witness data from transaction inputs (Friedger's method)
+  let witnessData = tx.vin.reduce((acc: string, input: any) => {
+    if (input.txinwitness) {
+      acc += input.txinwitness.join("");
+    }
+    return acc;
+  }, "");
+  
+  console.log(`✅ [KENNY] Calculated witness data: ${witnessData.length} chars`);
+  
+  // Split proofs into chunks for Clarity
+  const witnessProofChunks = (proof.witnessMerkleProof.match(/.{1,64}/g) || []);
+  const coinbaseProofChunks = (proof.coinbaseMerkleProof.match(/.{1,64}/g) || []);
+  
+  // Return the formatted proof with Kenny's data + RPC transaction data
   const formattedProof = {
-    segwit: true,
+    segwit: true, // Kenny handles SegWit transactions
     height: proof.blockHeight,
     header: proof.blockHeader,
     txIndex: proof.txIndex,
     treeDepth: proof.merkleProofDepth,
     
-    // Use actual proof data
+    // Kenny's proof data  
     wproof: witnessProofChunks,
-    computedWtxidRoot: witnessRoot,
-    ctxHex: proof.coinbaseTransaction, // Use Kenny's coinbase as-is
+    computedWtxidRoot: (proof as any).witnessMerkleRoot || proof.witnessReservedValue,
+    ctxHex: (proof as any).legacyCoinbaseTxHex || proof.coinbaseTransaction,
     cproof: coinbaseProofChunks,
     
-    // Transaction structure
-    wtx: wtx,
-    witnessData: witnessData
+    // RPC transaction data (the key addition from Friedger's method)
+    rpcTx: tx,
+    witnessDataCalculated: witnessData
   };
-
-  console.log(`✅ [KENNY] Final proof: height=${formattedProof.height}, txIndex=${formattedProof.txIndex}, treeDepth=${formattedProof.treeDepth}`);
-  console.log(`✅ [KENNY] Witness root: ${formattedProof.computedWtxidRoot}`);
-  console.log(`✅ [KENNY] Proof chunks: witness=${formattedProof.wproof.length}, coinbase=${formattedProof.cproof.length}`);
   
-  console.log("🔍 [KENNY-VERIFY] Starting Kenny proof verification...");
-  const isValid = await verifyKennyProofData(txid, formattedProof, blockHash);
-  console.log(`🔍 [KENNY-VERIFY] Kenny proof validation: ${isValid ? 'PASSED ✅' : 'FAILED ❌'}`);
-
-
+  console.log(`✅ [KENNY] Final proof: height=${formattedProof.height}, txIndex=${formattedProof.txIndex}, witnessData=${witnessData.length} chars`);
   return formattedProof;
 }
 
-// SIMPLIFIED chunk splitting - no forced padding
-function splitIntoChunksSimple(hexString: string): string[] {
-  if (!hexString || typeof hexString !== 'string') {
-    return [];
-  }
-  
-  const cleanHex = hexString.startsWith('0x') ? hexString.slice(2) : hexString;
-  const chunks: string[] = [];
-  
-  for (let i = 0; i < cleanHex.length; i += 64) {
-    const chunk = cleanHex.slice(i, i + 64);
-    if (chunk.length === 64) {
-      chunks.push(chunk);
-    }
-  }
-  
-  return chunks;
-}
-
-// SIMPLIFIED transaction parser - NO byte reversal (keep Kenny's format)
-function parseKennyTransactionDataSimple(combinedTxHex: string) {
-  console.log("🔧 [TX-PARSER] Parsing Kenny's transaction data (simplified)");
-  
-  const cleanHex = combinedTxHex.startsWith('0x') ? combinedTxHex.slice(2) : combinedTxHex;
-  let offset = 0;
-  
-  // Parse version (4 bytes) - KEEP Kenny's format
-  const version = cleanHex.slice(offset, offset + 8);
-  offset += 8;
-  
-  // Check for SegWit
-  const marker = cleanHex.slice(offset, offset + 2);
-  const flag = cleanHex.slice(offset + 2, offset + 4);
-  const isSegwit = marker === "00" && flag === "01";
-  
-  if (isSegwit) {
-    offset += 4;
-  }
-  
-  // Parse input count
-  const inputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
-  offset += 2;
-  
-  // Parse inputs
-  const inputs = [];
-  for (let i = 0; i < inputCount; i++) {
-    const prevHash = cleanHex.slice(offset, offset + 64);
-    offset += 64;
-    
-    const prevIndex = cleanHex.slice(offset, offset + 8);
-    offset += 8;
-    
-    const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
-    offset += 2;
-    const script = cleanHex.slice(offset, offset + (scriptLen * 2));
-    offset += (scriptLen * 2);
-    
-    const sequence = cleanHex.slice(offset, offset + 8);
-    offset += 8;
-    
-    inputs.push({
-      outpoint: {
-        hash: `0x${prevHash}`,
-        index: `0x${prevIndex}` // KEEP Kenny's big-endian format
-      },
-      scriptSig: `0x${script}`,
-      sequence: `0x${sequence}` // KEEP Kenny's big-endian format
-    });
-  }
-  
-  // Parse output count
-  const outputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
-  offset += 2;
-  
-  // Parse outputs
-  const outputs = [];
-  for (let i = 0; i < outputCount; i++) {
-    const value = cleanHex.slice(offset, offset + 16);
-    offset += 16;
-    
-    const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
-    offset += 2;
-    const script = cleanHex.slice(offset, offset + (scriptLen * 2));
-    offset += (scriptLen * 2);
-    
-    outputs.push({
-      value: `0x${value}`, // KEEP Kenny's big-endian format
-      scriptPubKey: `0x${script}`
-    });
-  }
-  
-  // Extract witness data and locktime
-  let witnessData = "0x";
-  let locktime = "0x00000000";
-  
-  if (isSegwit && offset < cleanHex.length - 8) {
-    witnessData = `0x${cleanHex.slice(offset, cleanHex.length - 8)}`;
-    locktime = `0x${cleanHex.slice(-8)}`;
-  } else {
-    locktime = `0x${cleanHex.slice(-8)}`;
-  }
-  
-  const parsedTx = {
-    version: `0x${version}`, // KEEP Kenny's format
-    ins: inputs,
-    outs: outputs,
-    locktime: locktime
-  };
-  
-  return {
-    wtx: parsedTx,
-    witnessData: witnessData
-  };
-}
-
-function extractWitnessCommitment(coinbaseTxHex: string): string | null {
-  try {
-    const commitmentPattern = /aa21a9ed([0-9a-fA-F]{64})/i;
-    const match = coinbaseTxHex.match(commitmentPattern);
-    
-    if (match && match[1]) {
-      const witnessCommitment = match[1].toLowerCase();
-      if (witnessCommitment !== '0000000000000000000000000000000000000000000000000000000000000000') {
-        return witnessCommitment;
-      }
-    }
-    
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-
-// Helper function to split hex strings into 32-byte chunks
-function splitIntoChunks(hexString: string): string[] {
-  if (!hexString || typeof hexString !== 'string') {
-    console.log("⚠️ [CHUNK] Empty or invalid hex string provided");
-    return [];
-  }
-  
-  // Remove 0x prefix if present
-  const cleanHex = hexString.startsWith('0x') ? hexString.slice(2) : hexString;
-  console.log(`🔧 [CHUNK] Processing hex string of length: ${cleanHex.length}`);
-  
-  // Split into 64-character chunks (32 bytes each)
-  const chunks: string[] = [];
-  for (let i = 0; i < cleanHex.length; i += 64) {
-    const chunk = cleanHex.slice(i, i + 64);
-    if (chunk.length === 64) {
-      chunks.push(chunk);
-    } else if (chunk.length > 0) {
-      // Pad incomplete chunks to 64 chars
-      chunks.push(chunk.padEnd(64, '0'));
-      console.log(`🔧 [CHUNK] Padded incomplete chunk: ${chunk.length} -> 64 chars`);
-    }
-  }
-  
-  console.log(`✅ [CHUNK] Created ${chunks.length} chunks from ${cleanHex.length} chars`);
-  return chunks;
-}
-
-// Enhanced transaction parser that keeps Kenny's big-endian format
-function parseKennyTransactionData(combinedTxHex: string) {
-  console.log("🔧 [TX-PARSER] Parsing Kenny's combined transaction data");
-  console.log("🔧 [TX-PARSER] Input length:", combinedTxHex.length);
-  
-  const cleanHex = combinedTxHex.startsWith('0x') ? combinedTxHex.slice(2) : combinedTxHex;
-  let offset = 0;
-  
-  // Parse version (4 bytes) - KEEP AS-IS (already big-endian)
-  const version = cleanHex.slice(offset, offset + 8);
-  offset += 8;
-  console.log(`✅ [TX-PARSER] Version: 0x${version} (keeping Kenny's format)`);
-  
-  // Check for SegWit marker and flag
-  const marker = cleanHex.slice(offset, offset + 2);
-  const flag = cleanHex.slice(offset + 2, offset + 4);
-  const isSegwit = marker === "00" && flag === "01";
-  console.log(`✅ [TX-PARSER] Marker: ${marker}, Flag: ${flag}, IsSegWit: ${isSegwit}`);
-  
-  if (isSegwit) {
-    offset += 4;
-  }
-  
-  // Parse input count
-  const inputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
-  offset += 2;
-  console.log(`✅ [TX-PARSER] Input count: ${inputCount}`);
-  
-  // Parse inputs
-  const inputs = [];
-  for (let i = 0; i < inputCount; i++) {
-    console.log(`🔧 [TX-PARSER] Parsing input ${i + 1}/${inputCount}`);
-    
-    const prevHash = cleanHex.slice(offset, offset + 64);
-    offset += 64;
-    
-    const prevIndex = cleanHex.slice(offset, offset + 8);
-    offset += 8;
-    
-    const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
-    offset += 2;
-    const script = cleanHex.slice(offset, offset + (scriptLen * 2));
-    offset += (scriptLen * 2);
-    
-    const sequence = cleanHex.slice(offset, offset + 8);
-    offset += 8;
-    
-    inputs.push({
-      outpoint: {
-        hash: `0x${prevHash}`,
-        index: `0x${prevIndex}` // Keep Kenny's format
-      },
-      scriptSig: `0x${script}`,
-      sequence: `0x${sequence}` // Keep Kenny's format
-    });
-    
-    console.log(`✅ [TX-PARSER] Input ${i + 1}: index=${prevIndex}, sequence=${sequence}`);
-  }
-  
-  // Parse output count
-  const outputCount = parseInt(cleanHex.slice(offset, offset + 2), 16);
-  offset += 2;
-  console.log(`✅ [TX-PARSER] Output count: ${outputCount}`);
-  
-  // Parse outputs
-  const outputs = [];
-  for (let i = 0; i < outputCount; i++) {
-    console.log(`🔧 [TX-PARSER] Parsing output ${i + 1}/${outputCount}`);
-    
-    const value = cleanHex.slice(offset, offset + 16);
-    offset += 16;
-    
-    const scriptLen = parseInt(cleanHex.slice(offset, offset + 2), 16);
-    offset += 2;
-    const script = cleanHex.slice(offset, offset + (scriptLen * 2));
-    offset += (scriptLen * 2);
-    
-    outputs.push({
-      value: `0x${value}`, // Keep Kenny's big-endian format
-      scriptPubKey: `0x${script}`
-    });
-    
-    console.log(`✅ [TX-PARSER] Output ${i + 1}: value=${value}`);
-  }
-  
-  // Extract witness data and locktime
-  let witnessData = "0x";
-  let locktime = "0x00000000";
-  
-  if (isSegwit && offset < cleanHex.length - 8) {
-    const witnessStart = offset;
-    const witnessEnd = cleanHex.length - 8;
-    witnessData = `0x${cleanHex.slice(witnessStart, witnessEnd)}`;
-    locktime = `0x${cleanHex.slice(-8)}`; // Keep Kenny's format
-    console.log(`✅ [TX-PARSER] SegWit - Witness data length: ${witnessData.length - 2}, Locktime: ${locktime}`);
-  } else {
-    locktime = `0x${cleanHex.slice(-8)}`; // Keep Kenny's format
-    console.log(`✅ [TX-PARSER] Non-SegWit - Locktime: ${locktime}`);
-  }
-  
-  const parsedTx = {
-    version: `0x${version}`, // Keep Kenny's big-endian format
-    ins: inputs,
-    outs: outputs,
-    locktime: locktime // Keep Kenny's format
-  };
-  
-  console.log("✅ [TX-PARSER] Using Kenny's original big-endian format (no byte reversal)");
-  
-  return {
-    wtx: parsedTx,
-    witnessData: witnessData
-  };
-}
-
-// Add these type definitions at the top of your server.ts file
-
-// Type for parsed transaction structure
-interface ParsedTransaction {
-  version: string;
-  ins: Array<{
-    outpoint: {
-      hash: string;
-      index: string;
-    };
-    scriptSig: string;
-    sequence: string;
-  }>;
-  outs: Array<{
-    value: string;
-    scriptPubKey: string;
-  }>;
-  locktime: string;
-}
-
-// Type for parsed transaction data result
-interface ParsedTransactionData {
-  wtx: ParsedTransaction;
-  witnessData: string;
-}
-
-// Type for Kenny's proof result - make it flexible
 interface KennyProofResult {
   blockHeight: number;
-  transaction: string;
   blockHeader: string;
   txIndex: number;
   merkleProofDepth: number;
+  witnessMerkleRoot: string;
   witnessMerkleProof: string;
   witnessReservedValue: string;
-  coinbaseTransaction: string;
+  legacyCoinbaseTxHex: string;
   coinbaseMerkleProof: string;
-  [key: string]: any; // Allow additional properties for flexible access
 }
 
 interface BitcoinRPCResponse<T> {
@@ -1604,242 +1341,6 @@ interface BlockDataWithTxIds {
   tx: string[];
 }
 
-
-// 1. VERIFY TRANSACTION INDEX
-async function verifyTransactionIndex(txid: string, blockHash: string, expectedIndex: number): Promise<boolean> {
-  console.log(`🔍 [VERIFY-INDEX] Checking if ${txid} is at index ${expectedIndex}`);
-  
-  try {
-    const blockRequest = JSON.stringify({
-      jsonrpc: '1.0',
-      id: 'bitcoin-rpc',
-      method: 'getblock',
-      params: [blockHash, 2]
-    });
-    
-    const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-      },
-      body: blockRequest
-    });
-    
-    const blockData = await response.json() as BitcoinRPCResponse<BlockData>;
-    
-    if (blockData.result && blockData.result.tx) {
-      const transactions = blockData.result.tx;
-      console.log(`📊 [VERIFY-INDEX] Block has ${transactions.length} transactions`);
-      
-      const actualIndex = transactions.findIndex((tx: any) => tx.txid === txid);
-      
-      if (actualIndex === -1) {
-        console.error(`❌ [VERIFY-INDEX] Transaction ${txid} NOT FOUND in block`);
-        return false;
-      }
-      
-      if (actualIndex === expectedIndex) {
-        console.log(`✅ [VERIFY-INDEX] Transaction found at correct index ${actualIndex}`);
-        return true;
-      } else {
-        console.error(`❌ [VERIFY-INDEX] Index mismatch! Expected: ${expectedIndex}, Actual: ${actualIndex}`);
-        return false;
-      }
-    } else {
-      console.error(`❌ [VERIFY-INDEX] Could not get block data`);
-      return false;
-    }
-  } catch (error) {
-    console.error(`❌ [VERIFY-INDEX] Error:`, error);
-    return false;
-  }
-}
-
-// 2. VERIFY MERKLE PROOF PATH
-async function verifyMerkleProofPath(txid: string, blockHash: string, expectedIndex: number, kennyProof: string[]): Promise<boolean> {
-  console.log(`🔍 [VERIFY-PROOF] Verifying merkle proof path for index ${expectedIndex}`);
-  
-  try {
-    const blockRequest = JSON.stringify({
-      jsonrpc: '1.0',
-      id: 'bitcoin-rpc',
-      method: 'getblock',
-      params: [blockHash, 1]
-    });
-    
-    const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-      },
-      body: blockRequest
-    });
-    
-    const blockData = await response.json() as BitcoinRPCResponse<BlockDataWithTxIds>;
-    
-    if (blockData.result && blockData.result.tx) {
-      const txids = blockData.result.tx;
-      console.log(`📊 [VERIFY-PROOF] Block has ${txids.length} transactions`);
-      
-      const merkleProof = calculateMerkleProof(txids, expectedIndex);
-      
-      console.log(`🔍 [VERIFY-PROOF] Calculated proof (${merkleProof.length} elements):`);
-      merkleProof.forEach((hash, i) => {
-        console.log(`   ${i}: ${hash}`);
-      });
-      
-      console.log(`🔍 [VERIFY-PROOF] Kenny's proof (${kennyProof.length} elements):`);
-      kennyProof.forEach((hash, i) => {
-        console.log(`   ${i}: ${hash}`);
-      });
-      
-      if (merkleProof.length !== kennyProof.length) {
-        console.error(`❌ [VERIFY-PROOF] Length mismatch! Expected: ${merkleProof.length}, Kenny: ${kennyProof.length}`);
-        return false;
-      }
-      
-      let matches = true;
-      for (let i = 0; i < merkleProof.length; i++) {
-        if (merkleProof[i] !== kennyProof[i]) {
-          console.error(`❌ [VERIFY-PROOF] Hash ${i} mismatch!`);
-          console.error(`   Expected: ${merkleProof[i]}`);
-          console.error(`   Kenny:    ${kennyProof[i]}`);
-          matches = false;
-        }
-      }
-      
-      if (matches) {
-        console.log(`✅ [VERIFY-PROOF] Kenny's proof matches calculated proof!`);
-        return true;
-      } else {
-        console.error(`❌ [VERIFY-PROOF] Kenny's proof does NOT match!`);
-        return false;
-      }
-    }
-    
-    return false;
-  } catch (error) {
-    console.error(`❌ [VERIFY-PROOF] Error:`, error);
-    return false;
-  }
-}
-
-// 3. SIMPLE MERKLE PROOF CALCULATOR
-function calculateMerkleProof(txids: string[], targetIndex: number): string[] {
-  console.log(`🔧 [MERKLE-CALC] Calculating proof for index ${targetIndex} in ${txids.length} transactions`);
-  
-  const proof: string[] = [];
-  let currentLevel = [...txids];
-  let currentIndex = targetIndex;
-  
-  while (currentLevel.length > 1) {
-    const nextLevel: string[] = [];
-    
-    const isEven = currentIndex % 2 === 0;
-    const siblingIndex = isEven ? currentIndex + 1 : currentIndex - 1;
-    
-    if (siblingIndex < currentLevel.length) {
-      proof.push(currentLevel[siblingIndex]);
-      console.log(`   Level ${currentLevel.length}: sibling at ${siblingIndex} = ${currentLevel[siblingIndex]}`);
-    } else {
-      proof.push(currentLevel[currentIndex]);
-      console.log(`   Level ${currentLevel.length}: duplicating ${currentLevel[currentIndex]}`);
-    }
-    
-    for (let i = 0; i < currentLevel.length; i += 2) {
-      const left = currentLevel[i];
-      const right = i + 1 < currentLevel.length ? currentLevel[i + 1] : left;
-      nextLevel.push(`hash(${left}+${right})`);
-    }
-    
-    currentLevel = nextLevel;
-    currentIndex = Math.floor(currentIndex / 2);
-  }
-  
-  return proof;
-}
-
-// 4. VERIFY WITNESS MERKLE ROOT
-async function verifyWitnessMerkleRoot(blockHash: string, kennyWitnessRoot: string): Promise<boolean> {
-  console.log(`🔍 [VERIFY-WITNESS] Checking witness merkle root: ${kennyWitnessRoot}`);
-  
-  try {
-    const blockRequest = JSON.stringify({
-      jsonrpc: '1.0',
-      id: 'bitcoin-rpc',
-      method: 'getblock',
-      params: [blockHash, 2]
-    });
-    
-    const response = await fetch(`http://${process.env.RPC_HOST || 'localhost'}:${process.env.RPC_PORT || '8332'}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + Buffer.from(`${process.env.RPC_USER || ''}:${process.env.RPC_PASS || ''}`).toString('base64')
-      },
-      body: blockRequest
-    });
-    
-    const blockData = await response.json() as BitcoinRPCResponse<BlockData>;
-    
-    if (blockData.result && blockData.result.tx && blockData.result.tx[0]) {
-      const coinbaseTx = blockData.result.tx[0];
-      console.log(`📊 [VERIFY-WITNESS] Got coinbase transaction: ${coinbaseTx.txid}`);
-      
-      let witnessCommitment: string | null = null;
-      for (const output of coinbaseTx.vout) {
-        if (output.scriptPubKey && output.scriptPubKey.hex) {
-          const script = output.scriptPubKey.hex;
-          const match = script.match(/6a24aa21a9ed([0-9a-fA-F]{64})/);
-          if (match) {
-            witnessCommitment = match[1];
-            break;
-          }
-        }
-      }
-      
-      if (witnessCommitment) {
-        console.log(`✅ [VERIFY-WITNESS] Found witness commitment: ${witnessCommitment}`);
-        
-        if (witnessCommitment.toLowerCase() === kennyWitnessRoot.toLowerCase()) {
-          console.log(`✅ [VERIFY-WITNESS] Kenny's witness root matches coinbase commitment!`);
-          return true;
-        } else {
-          console.error(`❌ [VERIFY-WITNESS] Mismatch!`);
-          console.error(`   Coinbase: ${witnessCommitment}`);
-          console.error(`   Kenny:    ${kennyWitnessRoot}`);
-          return false;
-        }
-      } else {
-        console.error(`❌ [VERIFY-WITNESS] No witness commitment found in coinbase`);
-        return false;
-      }
-    }
-    
-    return false;
-  } catch (error) {
-    console.error(`❌ [VERIFY-WITNESS] Error:`, error);
-    return false;
-  }
-}
-
-// 5. MAIN VERIFICATION FUNCTION
-async function verifyKennyProofData(txid: string, kennyProof: any, blockHash: string): Promise<boolean> {
-  console.log("🔍 [VERIFY-KENNY] Starting Kenny proof verification...");
-  
-  const indexValid = await verifyTransactionIndex(txid, blockHash, kennyProof.txIndex);
-  const proofValid = await verifyMerkleProofPath(txid, blockHash, kennyProof.txIndex, kennyProof.wproof);
-  const witnessValid = await verifyWitnessMerkleRoot(blockHash, kennyProof.computedWtxidRoot);
-  
-  console.log("📊 [VERIFY-KENNY] Results:");
-  console.log(`   Transaction Index: ${indexValid ? '✅' : '❌'}`);
-  console.log(`   Merkle Proof: ${proofValid ? '✅' : '❌'}`);
-  console.log(`   Witness Root: ${witnessValid ? '✅' : '❌'}`);
-  
-  return indexValid && proofValid && witnessValid;
-}
 
 // Add a cache clearing endpoint for testing
 app.delete('/api/proof-kenny-cache/:txid', async (req, res) => {
