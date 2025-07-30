@@ -1292,8 +1292,8 @@ async function processKennyRequest(txid: string): Promise<any> {
     
     // Kenny's proof data  
     wproof: witnessProofChunks,
-    computedWtxidRoot: (proof as any).witnessMerkleRoot || proof.witnessReservedValue,
-    ctxHex: (proof as any).legacyCoinbaseTxHex || proof.coinbaseTransaction,
+    computedWtxidRoot: proof.witnessMerkleProof, // Use correct property name
+    ctxHex: proof.coinbaseTransaction, // Use correct property name  
     cproof: coinbaseProofChunks,
     
     // RPC transaction data (the key addition from Friedger's method)
