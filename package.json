@@ -10,7 +10,7 @@
     "dev": "ts-node --esm src/server.ts"
   },
   "dependencies": {
-    "@clarigen/core": "^1.0.15",
+    "@clarigen/core": "^3.0.0",
     "axios": "^1.5.0",
     "bitcoin-tx-proof": "git://github.com/friedger/bitcoin-tx-proof.git#00586b10632bac0968d63b0156b9c61e2da3bbcb",
     "clarity-bitcoin-client": "^1.0.18",

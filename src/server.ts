@@ -1246,6 +1246,13 @@ async function processKennyRequest(txid: string): Promise<any> {
   console.log(`🔄 [KENNY] Calling Kenny's bitcoinTxProof for block height ${blockHeight}...`);
   const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig);
 
+  console.log("🔍 [KENNY-CHECK] witnessMerkleProof:", proof.witnessMerkleProof);
+console.log("🔍 [KENNY-CHECK] witnessMerkleProof length:", proof.witnessMerkleProof?.length || 0);
+
+if (!proof.witnessMerkleProof || proof.witnessMerkleProof.length === 0) {
+  throw new Error(`Kenny returned empty witnessMerkleProof - likely ES module import issue`);
+}
+
   console.log("🔍 [KENNY-FULL] Complete Kenny proof object:");
 console.log("🔍 [KENNY-FULL] Keys:", Object.keys(proof));
 console.log("🔍 [KENNY-FULL] Types:", Object.keys(proof).map(key => `${key}: ${typeof (proof as any)[key]}`));
@@ -1315,17 +1322,34 @@ if (missingProperties.length > 0) {
   
   // Calculate witness data from transaction inputs (Friedger's method)
   let witnessData = tx.vin.reduce((acc: string, input: any) => {
-    if (input.txinwitness) {
-      acc += input.txinwitness.join("");
+    if (input.txinwitness && input.txinwitness.length > 0) {
+      // Add witness stack count (number of witness items)
+      const stackCount = input.txinwitness.length.toString(16).padStart(2, '0');
+      acc += stackCount;
+      
+      // Add each witness item with its length prefix
+      for (const witnessItem of input.txinwitness) {
+        const itemLength = (witnessItem.length / 2).toString(16).padStart(2, '0');
+        acc += itemLength + witnessItem;
+      }
     }
     return acc;
   }, "");
   
   console.log(`✅ [KENNY] Calculated witness data: ${witnessData.length} chars`);
+  // In your processKennyRequest, after witness calculation:
+console.log(`🔍 [WITNESS-RAW] txinwitness array:`, tx.vin[0].txinwitness);
+console.log(`🔍 [WITNESS-CALC] Calculated:`, witnessData);
+console.log(`🔍 [WITNESS-EXPECTED] Friedger's:`, "024730440220704c48e3c46f6d1b663ba202f7395af2b647266e126be5b0d98855cf62a35b9802206ff5c6ecd822d8a782a895fab162fcfa392af4a0c915045afaa84aa30f8e9b8c012103f64b159b714d55ff027265c25a1a76daba8fec4cf2fa4daa424aebd4c36fb600");
+
+// If they don't match, let's see what's different
+if (witnessData !== "024730440220704c48e3c46f6d1b663ba202f7395af2b647266e126be5b0d98855cf62a35b9802206ff5c6ecd822d8a782a895fab162fcfa392af4a0c915045afaa84aa30f8e9b8c012103f64b159b714d55ff027265c25a1a76daba8fec4cf2fa4daa424aebd4c36fb600") {
+  console.log(`🚨 [WITNESS-MISMATCH] Calculated length:`, witnessData.length);
+  console.log(`🚨 [WITNESS-MISMATCH] Expected length:`, 208);
+  console.log(`🚨 [WITNESS-MISMATCH] First 50 chars calculated:`, witnessData.slice(0, 50));
+  console.log(`🚨 [WITNESS-MISMATCH] First 50 chars expected:`, "024730440220704c48e3c46f6d1b663ba202f7395af2b647266e");
+}
   
-  // Split proofs into chunks for Clarity
-  const witnessProofChunks = (proof.witnessMerkleProof.match(/.{1,64}/g) || []);
-  const coinbaseProofChunks = (proof.coinbaseMerkleProof.match(/.{1,64}/g) || []);
   
   // REPLACE with this Friedger-compatible format:
 // Return the formatted proof matching Friedger's exact structure
@@ -1338,10 +1362,8 @@ const formattedProof = {
   treeDepth: proof.merkleProofDepth,
   
   // SegWit proof chunks for Clarity (chunked for size limits)
-  wproof: witnessProofChunks,
   computedWtxidRoot: proof.witnessMerkleRoot, // Use Kenny's computed root directly
   ctxHex: proof.legacyCoinbaseTxHex, // Kenny's coinbase transaction
-  cproof: coinbaseProofChunks,
   
   // Friedger's method: Include RPC transaction data directly
   rpcTx: tx,
@@ -1367,6 +1389,9 @@ console.log("🎯 [KENNY-FINAL] - Match:", formattedProof.computedWtxidRoot === 
 console.log("🎯 [KENNY-FINAL] - rpcTx present:", !!formattedProof.rpcTx);
 console.log("🎯 [KENNY-FINAL] - rpcTx.vin length:", formattedProof.rpcTx?.vin?.length);
 console.log("🎯 [KENNY-FINAL] - rpcTx.vout length:", formattedProof.rpcTx?.vout?.length);
+
+console.log("rapha witnessMerkleProof", formattedProof.witnessMerkleProof);
+console.log("rapha coinbaseMerkleProof", formattedProof.coinbaseMerkleProof);
 
 // Verify against Friedger's expected structure
 const friedgerTxid = "a54f313f68172ac996c37d36baa885486dfea900cce4debca3fcdea7ea45f64f";
