@@ -1018,7 +1018,7 @@ async function processKennyRequest(txid) {
         // SegWit proof chunks for Clarity (chunked for size limits)
         wproof: witnessProofChunks,
         computedWtxidRoot: proof.witnessMerkleRoot, // Use Kenny's computed root directly
-        ctxHex: proof.coinbaseTransaction, // Kenny's coinbase transaction
+        ctxHex: proof.legacyCoinbaseTxHex, // Kenny's coinbase transaction
         cproof: coinbaseProofChunks,
         // Friedger's method: Include RPC transaction data directly
         rpcTx: tx,
@@ -1027,7 +1027,7 @@ async function processKennyRequest(txid) {
         witnessMerkleRoot: proof.witnessMerkleRoot,
         witnessMerkleProof: proof.witnessMerkleProof,
         witnessReservedValue: proof.witnessReservedValue,
-        legacyCoinbaseTxHex: proof.coinbaseTransaction, // Legacy name compatibility
+        legacyCoinbaseTxHex: proof.legacyCoinbaseTxHex, // Legacy name compatibility
         coinbaseMerkleProof: proof.coinbaseMerkleProof
     };
     // 3. ADD: Enhanced debug logging before return

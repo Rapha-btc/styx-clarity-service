@@ -1340,7 +1340,7 @@ const formattedProof = {
   // SegWit proof chunks for Clarity (chunked for size limits)
   wproof: witnessProofChunks,
   computedWtxidRoot: proof.witnessMerkleRoot, // Use Kenny's computed root directly
-  ctxHex: proof.coinbaseTransaction, // Kenny's coinbase transaction
+  ctxHex: proof.legacyCoinbaseTxHex, // Kenny's coinbase transaction
   cproof: coinbaseProofChunks,
   
   // Friedger's method: Include RPC transaction data directly
@@ -1351,7 +1351,7 @@ const formattedProof = {
   witnessMerkleRoot: proof.witnessMerkleRoot,
   witnessMerkleProof: proof.witnessMerkleProof,
   witnessReservedValue: proof.witnessReservedValue,
-  legacyCoinbaseTxHex: proof.coinbaseTransaction, // Legacy name compatibility
+  legacyCoinbaseTxHex: proof.legacyCoinbaseTxHex, // Legacy name compatibility
   coinbaseMerkleProof: proof.coinbaseMerkleProof
 };
 
