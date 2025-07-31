@@ -179,6 +179,13 @@ app.get('/api/proof/:txid', async (req, res) => {
                 dataKeys: data ? Object.keys(data) : [],
                 dataType: typeof data
             });
+            // ADD THESE LINES:
+            console.log("🔍 [BLOCK-DATA] Block data keys:", Object.keys(data.block || {}));
+            console.log("🔍 [BLOCK-DATA] Block data sample:", JSON.stringify(data.block || {}, null, 2).slice(0, 500));
+            // Check if the block has coinbase transaction
+            if (data.block && data.block.tx && data.block.tx[0]) {
+                console.log("🔍 [BLOCK-DATA] Coinbase tx from block:", JSON.stringify(data.block.tx[0], null, 2).slice(0, 300));
+            }
         }
         catch (proofError) {
             // console.error("❌ [PROOF] getProofData failed:");
@@ -934,8 +941,38 @@ async function processKennyRequest(txid) {
     // Call Kenny's bitcoinTxProof function
     console.log(`🔄 [KENNY] Calling Kenny's bitcoinTxProof for block height ${blockHeight}...`);
     const proof = await bitcoinTxProof(txid, blockHeight, btcRPCConfig);
+    console.log("🔍 [KENNY-FULL] Complete Kenny proof object:");
+    console.log("🔍 [KENNY-FULL] Keys:", Object.keys(proof));
+    console.log("🔍 [KENNY-FULL] Types:", Object.keys(proof).map(key => `${key}: ${typeof proof[key]}`));
+    // Check every possible property that might contain the witness root
+    console.log("🔍 [KENNY-PROPS] witnessMerkleRoot:", proof.witnessMerkleRoot);
+    console.log("🔍 [KENNY-PROPS] witnessRoot:", proof.witnessRoot);
+    console.log("🔍 [KENNY-PROPS] witnessCommitment:", proof.witnessCommitment);
+    console.log("🔍 [KENNY-PROPS] witnessMerkleProof length:", proof.witnessMerkleProof?.length);
+    console.log("🔍 [KENNY-PROPS] witnessReservedValue:", proof.witnessReservedValue);
+    // Log the full proof object (truncated)
+    console.log("🔍 [KENNY-FULL] Full proof (first 500 chars):", JSON.stringify(proof, null, 2).slice(0, 500));
     console.log("✅ [KENNY] Kenny's bitcoinTxProof completed successfully");
     console.log(`✅ [KENNY] Proof keys:`, Object.keys(proof));
+    // Debug Kenny's proof structure to match Friedger's format
+    console.log("🔍 [KENNY-STRUCTURE] Kenny proof analysis:");
+    console.log("🔍 [KENNY-STRUCTURE] - blockHeight:", proof.blockHeight);
+    console.log("🔍 [KENNY-STRUCTURE] - txIndex:", proof.txIndex);
+    console.log("🔍 [KENNY-STRUCTURE] - merkleProofDepth:", proof.merkleProofDepth);
+    console.log("🔍 [KENNY-STRUCTURE] - witnessMerkleRoot:", proof.witnessMerkleRoot);
+    console.log("🔍 [KENNY-STRUCTURE] - witnessMerkleProof length:", proof.witnessMerkleProof?.length);
+    console.log("🔍 [KENNY-STRUCTURE] - witnessReservedValue:", proof.witnessReservedValue);
+    console.log("🔍 [KENNY-STRUCTURE] - coinbaseTransaction length:", proof.coinbaseTransaction?.length);
+    console.log("🔍 [KENNY-STRUCTURE] - coinbaseMerkleProof length:", proof.coinbaseMerkleProof?.length);
+    // Verify we have the exact same properties as Friedger's proof
+    const expectedProperties = ['blockHeight', 'blockHeader', 'txIndex', 'merkleProofDepth', 'witnessMerkleRoot', 'witnessMerkleProof', 'witnessReservedValue', 'coinbaseTransaction', 'coinbaseMerkleProof'];
+    const missingProperties = expectedProperties.filter(prop => !(prop in proof));
+    if (missingProperties.length > 0) {
+        console.log("🚨 [KENNY-STRUCTURE] Missing properties:", missingProperties);
+    }
+    else {
+        console.log("✅ [KENNY-STRUCTURE] All expected properties present");
+    }
     // Now get the detailed transaction data using RPC (this is Friedger's key insight)
     console.log(`🔄 [KENNY] Getting detailed transaction data via RPC...`);
     const detailTxRequestBody = JSON.stringify({
@@ -969,24 +1006,69 @@ async function processKennyRequest(txid) {
     // Split proofs into chunks for Clarity
     const witnessProofChunks = (proof.witnessMerkleProof.match(/.{1,64}/g) || []);
     const coinbaseProofChunks = (proof.coinbaseMerkleProof.match(/.{1,64}/g) || []);
-    // Return the formatted proof with Kenny's data + RPC transaction data
+    // REPLACE with this Friedger-compatible format:
+    // Return the formatted proof matching Friedger's exact structure
     const formattedProof = {
-        segwit: true, // Kenny handles SegWit transactions
+        // Standard proof fields
+        segwit: true,
         height: proof.blockHeight,
         header: proof.blockHeader,
         txIndex: proof.txIndex,
         treeDepth: proof.merkleProofDepth,
-        // Kenny's proof data  
+        // SegWit proof chunks for Clarity (chunked for size limits)
         wproof: witnessProofChunks,
-        computedWtxidRoot: proof.witnessMerkleProof, // Use correct property name
-        ctxHex: proof.coinbaseTransaction, // Use correct property name  
+        computedWtxidRoot: proof.witnessMerkleRoot, // Use Kenny's computed root directly
+        ctxHex: proof.coinbaseTransaction, // Kenny's coinbase transaction
         cproof: coinbaseProofChunks,
-        // RPC transaction data (the key addition from Friedger's method)
+        // Friedger's method: Include RPC transaction data directly
         rpcTx: tx,
-        witnessDataCalculated: witnessData
+        witnessDataCalculated: witnessData,
+        // Additional Kenny properties for compatibility
+        witnessMerkleRoot: proof.witnessMerkleRoot,
+        witnessMerkleProof: proof.witnessMerkleProof,
+        witnessReservedValue: proof.witnessReservedValue,
+        legacyCoinbaseTxHex: proof.coinbaseTransaction, // Legacy name compatibility
+        coinbaseMerkleProof: proof.coinbaseMerkleProof
     };
+    // 3. ADD: Enhanced debug logging before return
+    // ADD this section right after the formattedProof definition:
+    console.log("🎯 [KENNY-FINAL] Final proof verification:");
+    console.log("🎯 [KENNY-FINAL] - height:", formattedProof.height);
+    console.log("🎯 [KENNY-FINAL] - txIndex:", formattedProof.txIndex);
+    console.log("🎯 [KENNY-FINAL] - witnessData length:", witnessData.length);
+    console.log("🎯 [KENNY-FINAL] - computedWtxidRoot:", formattedProof.computedWtxidRoot);
+    console.log("🎯 [KENNY-FINAL] - witnessMerkleRoot:", formattedProof.witnessMerkleRoot);
+    console.log("🎯 [KENNY-FINAL] - Match:", formattedProof.computedWtxidRoot === formattedProof.witnessMerkleRoot);
+    console.log("🎯 [KENNY-FINAL] - rpcTx present:", !!formattedProof.rpcTx);
+    console.log("🎯 [KENNY-FINAL] - rpcTx.vin length:", formattedProof.rpcTx?.vin?.length);
+    console.log("🎯 [KENNY-FINAL] - rpcTx.vout length:", formattedProof.rpcTx?.vout?.length);
+    // Verify against Friedger's expected structure
+    const friedgerTxid = "a54f313f68172ac996c37d36baa885486dfea900cce4debca3fcdea7ea45f64f";
+    if (txid === friedgerTxid) {
+        console.log("🎯 [FRIEDGER-VERIFY] This is Friedger's test transaction!");
+        console.log("🎯 [FRIEDGER-VERIFY] Expected height: 906982, Got:", formattedProof.height);
+        console.log("🎯 [FRIEDGER-VERIFY] Expected txIndex: 3428, Got:", formattedProof.txIndex);
+        console.log("🎯 [FRIEDGER-VERIFY] Expected witnessMerkleRoot: e18fcc4bc6177bef5c1c1b1fc1f1b46a19571381b2d0729c2648edb7d252a456");
+        console.log("🎯 [FRIEDGER-VERIFY] Got witnessMerkleRoot:", formattedProof.witnessMerkleRoot);
+    }
     console.log(`✅ [KENNY] Final proof: height=${formattedProof.height}, txIndex=${formattedProof.txIndex}, witnessData=${witnessData.length} chars`);
     return formattedProof;
+}
+function extractWitnessCommitment(coinbaseTxHex) {
+    try {
+        const commitmentPattern = /aa21a9ed([0-9a-fA-F]{64})/i;
+        const match = coinbaseTxHex.match(commitmentPattern);
+        if (match && match[1]) {
+            const witnessCommitment = match[1].toLowerCase();
+            if (witnessCommitment !== '0000000000000000000000000000000000000000000000000000000000000000') {
+                return witnessCommitment;
+            }
+        }
+        return null;
+    }
+    catch (error) {
+        return null;
+    }
 }
 // Add a cache clearing endpoint for testing
 app.delete('/api/proof-kenny-cache/:txid', async (req, res) => {
